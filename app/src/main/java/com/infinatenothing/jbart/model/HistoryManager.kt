@@ -1,8 +1,8 @@
 package com.infinatenothing.jbart.model
 
 class HistoryManager {
-    private val undoStack = ArrayDeque<String>()
-    private val redoStack = ArrayDeque<String>()
+    private val undoStack = ArrayDeque<DrawObject>()
+    private val redoStack = ArrayDeque<DrawObject>()
 
     var onChanged: (() -> Unit)? = null
 
@@ -12,13 +12,13 @@ class HistoryManager {
     val canRedo: Boolean
         get() = redoStack.isNotEmpty()
 
-    fun push(entry: String) {
+    fun push(entry: DrawObject) {
         undoStack.addLast(entry)
         redoStack.clear()
         onChanged?.invoke()
     }
 
-    fun undo(): String? {
+    fun undo(): DrawObject? {
         if (!canUndo) return null
         val entry = undoStack.removeLast()
         redoStack.addLast(entry)
@@ -26,7 +26,7 @@ class HistoryManager {
         return entry
     }
 
-    fun redo(): String? {
+    fun redo(): DrawObject? {
         if (!canRedo) return null
         val entry = redoStack.removeLast()
         undoStack.addLast(entry)

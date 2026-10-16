@@ -3,7 +3,13 @@ package com.infinatenothing.jbart.model
 sealed interface DrawObject {
     val tool: Tool
 
-    data class Stroke(override val tool: Tool = Tool.BRUSH) : DrawObject
+    data class Stroke(
+        val points: List<StrokePoint>,
+        val color: Int,
+        val baseWidthPx: Float,
+        val inputType: InputType,
+        override val tool: Tool = Tool.BRUSH,
+    ) : DrawObject
 
     data class Line(override val tool: Tool = Tool.LINE) : DrawObject
 
