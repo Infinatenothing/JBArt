@@ -71,7 +71,12 @@ class DrawingView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         canvas.drawColor(document.backgroundColor)
-        backing?.let { canvas.drawBitmap(it, 0f, 0f, null) }
+        backing?.let { bitmap ->
+            // CPU draws into this bitmap after the GPU has cached it. Without
+            // prepareToDraw the screen keeps the first blank upload.
+            bitmap.prepareToDraw()
+            canvas.drawBitmap(bitmap, 0f, 0f, null)
+        }
     }
 
     fun requestRedraw() = invalidate()
@@ -172,6 +177,8 @@ class DrawingView(context: Context) : View(context) {
         )
         document.objects.add(stroke)
         history.push(stroke)
+        backing?.prepareToDraw()
+        invalidate()
     }
 
     private fun discardStroke() {
