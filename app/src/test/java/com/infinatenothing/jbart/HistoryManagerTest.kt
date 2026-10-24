@@ -68,6 +68,48 @@ class HistoryManagerTest {
     }
 
     @Test
+    fun capByCountDropsOldestAndKeepsUndoRedo() {
+        val history = HistoryManager(maxEntries = 2, maxPoints = 100)
+        val first = stroke(1f)
+        val second = stroke(2f)
+        val third = stroke(3f)
+        history.push(first)
+        history.push(second)
+        history.push(third)
+        assertEquals(2, history.undoCount)
+        assertEquals(third, history.undo())
+        assertEquals(second, history.undo())
+        assertNull(history.undo())
+        assertEquals(second, history.redo())
+        assertEquals(third, history.redo())
+    }
+
+    @Test
+    fun capByPointsDropsOldest() {
+        val history = HistoryManager(maxEntries = 10, maxPoints = 3)
+        history.push(stroke(1f, points = 2))
+        history.push(stroke(2f, points = 2))
+        history.push(stroke(3f, points = 2))
+        assertEquals(1, history.undoCount)
+        assertEquals(stroke(3f, points = 2), history.undo())
+        assertFalse(history.canUndo)
+    }
+
+    @Test
+    fun pushClearsRedoAfterTrim() {
+        val history = HistoryManager(maxEntries = 2, maxPoints = 100)
+        history.push(stroke(1f))
+        history.push(stroke(2f))
+        history.push(stroke(3f))
+        history.undo()
+        history.push(stroke(4f))
+        assertFalse(history.canRedo)
+        assertEquals(stroke(4f), history.undo())
+        assertEquals(stroke(2f), history.undo())
+        assertNull(history.undo())
+    }
+
+    @Test
     fun pushClearsRedo() {
         val history = HistoryManager()
         val first = stroke(1f)
@@ -80,8 +122,8 @@ class HistoryManagerTest {
         assertFalse(history.canUndo)
     }
 
-    private fun stroke(x: Float) = DrawObject.Stroke(
-        points = listOf(StrokePoint(x, 0f, 1f, 0L)),
+    private fun stroke(x: Float, points: Int = 1) = DrawObject.Stroke(
+        points = List(points) { index -> StrokePoint(x + index, 0f, 1f, 0L) },
         color = 0xFF000000.toInt(),
         baseWidthPx = 4f,
         inputType = InputType.STYLUS,
