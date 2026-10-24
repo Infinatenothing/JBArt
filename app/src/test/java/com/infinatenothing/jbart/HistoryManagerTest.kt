@@ -36,6 +36,38 @@ class HistoryManagerTest {
     }
 
     @Test
+    fun mixedStrokeAndEraseUndoRedoThenPushClearsRedo() {
+        val history = HistoryManager()
+        val brush = stroke(1f)
+        val erase = DrawObject.EraseStroke(
+            points = listOf(StrokePoint(2f, 0f, 1f, 0L)),
+            baseWidthPx = 16f,
+            inputType = InputType.FINGER,
+        )
+        val brushAgain = stroke(3f)
+        history.push(brush)
+        history.push(erase)
+        history.push(brushAgain)
+
+        assertEquals(brushAgain, history.undo())
+        assertEquals(erase, history.undo())
+        assertEquals(brush, history.undo())
+        assertFalse(history.canUndo)
+        assertEquals(brush, history.redo())
+        assertEquals(erase, history.redo())
+        assertEquals(brushAgain, history.redo())
+        assertFalse(history.canRedo)
+
+        assertEquals(brushAgain, history.undo())
+        val replacement = stroke(4f)
+        history.push(replacement)
+        assertFalse(history.canRedo)
+        assertEquals(replacement, history.undo())
+        assertEquals(erase, history.undo())
+        assertEquals(brush, history.undo())
+    }
+
+    @Test
     fun pushClearsRedo() {
         val history = HistoryManager()
         val first = stroke(1f)

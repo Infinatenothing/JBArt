@@ -8,7 +8,15 @@ sealed interface DrawObject {
         val color: Int,
         val baseWidthPx: Float,
         val inputType: InputType,
+        val alpha: Float = 1f,
         override val tool: Tool = Tool.BRUSH,
+    ) : DrawObject
+
+    data class EraseStroke(
+        val points: List<StrokePoint>,
+        val baseWidthPx: Float,
+        val inputType: InputType,
+        override val tool: Tool = Tool.ERASER,
     ) : DrawObject
 
     data class Line(override val tool: Tool = Tool.LINE) : DrawObject
