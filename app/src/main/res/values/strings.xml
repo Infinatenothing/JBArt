@@ -9,4 +9,8 @@
     <string name="action_undo">Undo</string>
     <string name="action_redo">Redo</string>
     <string name="action_export">Export</string>
+    <string name="settings_brush">Brush</string>
+    <string name="settings_eraser">Eraser</string>
+    <string name="settings_size">Size %1$.1f dp</string>
+    <string name="settings_opacity">Opacity %1$d%%</string>
 </resources>

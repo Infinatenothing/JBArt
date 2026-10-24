@@ -35,6 +35,21 @@ class StrokeMathTest {
     }
 
     @Test
+    fun selectedSizeScalesStylusAndStaysFixedForFinger() {
+        val selected = 16f
+        val light = StrokePoint(0f, 0f, 0f, 0L)
+        val heavy = StrokePoint(0f, 0f, 1f, 0L)
+        assertEquals(selected, StrokeMath.widthFor(light, selected, InputType.FINGER), 0.0001f)
+        assertEquals(selected, StrokeMath.widthFor(heavy, selected, InputType.FINGER), 0.0001f)
+        assertEquals(
+            selected * StrokeMath.MIN_PRESSURE_FACTOR,
+            StrokeMath.widthFor(light, selected, InputType.STYLUS),
+            0.0001f,
+        )
+        assertEquals(selected, StrokeMath.widthFor(heavy, selected, InputType.STYLUS), 0.0001f)
+    }
+
+    @Test
     fun stylusWidthFollowsPressureCurve() {
         val light = StrokePoint(0f, 0f, 0f, 0L)
         val heavy = StrokePoint(0f, 0f, 1f, 0L)
