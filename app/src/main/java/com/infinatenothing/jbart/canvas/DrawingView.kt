@@ -15,7 +15,6 @@ import android.view.View
 import com.infinatenothing.jbart.model.BrushSettings
 import com.infinatenothing.jbart.model.DrawObject
 import com.infinatenothing.jbart.model.DrawingDocument
-import com.infinatenothing.jbart.model.HistoryManager
 import com.infinatenothing.jbart.model.InputType
 import com.infinatenothing.jbart.model.StrokePoint
 import com.infinatenothing.jbart.model.Tool
@@ -30,8 +29,9 @@ import kotlin.math.roundToInt
  * so a stroke does not darken where it crosses itself. Erases punch that ink with CLEAR.
  */
 class DrawingView(context: Context) : View(context) {
-    val document = DrawingDocument(backgroundColor = Color.WHITE)
-    var history = HistoryManager()
+    var document: DrawingDocument? = null
+    var onCommit: (DrawObject) -> Unit = {}
+    var renderedRevision: Int = -1
     var tool = Tool.BRUSH
     var brushSettings: BrushSettings = BrushSettings()
     var eraserSettings: BrushSettings = BrushSettings(sizeDp = BrushSettings.DEFAULT_ERASER_SIZE_DP)
@@ -85,9 +85,13 @@ class DrawingView(context: Context) : View(context) {
         inkCanvas = Canvas(created)
         scratch = scratchBitmap
         scratchCanvas = Canvas(scratchBitmap)
-        document.width = w
-        document.height = h
-        document.bitmap = created
+        // Canvas coordinates are view pixels. A smaller view clips; a larger one leaves
+        // empty space. Strokes are not scaled.
+        document?.let { doc ->
+            doc.width = w
+            doc.height = h
+            doc.bitmap = created
+        }
         if (drawing) {
             drawing = false
             stylusActive = false
@@ -98,7 +102,7 @@ class DrawingView(context: Context) : View(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
-        canvas.drawColor(document.backgroundColor)
+        canvas.drawColor(document?.backgroundColor ?: Color.WHITE)
         ink?.let { bitmap ->
             // CPU draws into this bitmap after the GPU has cached it. Without
             // prepareToDraw the screen keeps the first blank upload.
@@ -120,7 +124,7 @@ class DrawingView(context: Context) : View(context) {
     fun renderAll() {
         val canvas = inkCanvas ?: return
         canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
-        for (obj in document.objects) {
+        for (obj in document?.objects.orEmpty()) {
             when (obj) {
                 is DrawObject.Stroke -> stampBrush(obj.points, obj.baseWidthPx, obj.alpha, obj.inputType)
                 is DrawObject.EraseStroke -> stampErase(obj.points, obj.baseWidthPx, obj.inputType)
@@ -132,18 +136,16 @@ class DrawingView(context: Context) : View(context) {
         invalidate()
     }
 
-    fun undo() {
-        val entry = history.undo() ?: return
-        if (document.objects.lastOrNull() == entry) {
-            document.objects.removeAt(document.objects.lastIndex)
+    fun sync(source: DrawingDocument, revision: Int) {
+        document = source
+        if (width <= 0 || height <= 0) return
+        source.width = width
+        source.height = height
+        ink?.let { source.bitmap = it }
+        if (renderedRevision != revision) {
+            renderAll()
+            renderedRevision = revision
         }
-        renderAll()
-    }
-
-    fun redo() {
-        val entry = history.redo() ?: return
-        document.objects.add(entry)
-        renderAll()
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -235,8 +237,7 @@ class DrawingView(context: Context) : View(context) {
                 alpha = alpha,
             )
         }
-        document.objects.add(obj)
-        history.push(obj)
+        onCommit(obj)
         ink?.prepareToDraw()
         invalidate()
     }
