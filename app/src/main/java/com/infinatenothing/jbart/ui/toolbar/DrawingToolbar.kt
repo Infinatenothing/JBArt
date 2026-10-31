@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -23,6 +24,7 @@ import androidx.compose.material.icons.filled.CropSquare
 import androidx.compose.material.icons.filled.FormatColorFill
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Straighten
 import androidx.compose.material.icons.outlined.CleaningServices
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.HorizontalDivider
@@ -42,6 +44,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
@@ -61,6 +64,8 @@ fun DrawingToolbar(
     canRedo: Boolean,
     brushSettings: BrushSettings,
     eraserSettings: BrushSettings,
+    lineSnapEnabled: Boolean,
+    onLineSnap: (Boolean) -> Unit,
     settingsTool: Tool?,
     onSelectTool: (Tool) -> Unit,
     onOpenSettings: (Tool) -> Unit,
@@ -178,6 +183,9 @@ fun DrawingToolbar(
                     )
                 }
             }
+            if (item.tag == "tool_line" && selectedTool == Tool.LINE) {
+                SnapToggle(enabled = lineSnapEnabled, onToggle = onLineSnap)
+            }
         }
     }
     if (vertical) {
@@ -242,6 +250,28 @@ private data class Item(
     val onClick: () -> Unit,
     val onLongClick: (() -> Unit)? = null,
 )
+
+@Composable
+private fun SnapToggle(enabled: Boolean, onToggle: (Boolean) -> Unit) {
+    val background = if (enabled) MaterialTheme.colorScheme.primary else Color.Transparent
+    val tint = if (enabled) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+    Box(
+        modifier = Modifier
+            .testTag("line_snap_toggle")
+            .size(48.dp)
+            .clip(CircleShape)
+            .background(background)
+            .toggleable(value = enabled, role = Role.Switch, onValueChange = onToggle),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            Icons.Filled.Straighten,
+            contentDescription = stringResource(R.string.snap_angle),
+            tint = tint,
+            modifier = Modifier.size(24.dp),
+        )
+    }
+}
 
 @Composable
 private fun ToolButton(item: Item) {

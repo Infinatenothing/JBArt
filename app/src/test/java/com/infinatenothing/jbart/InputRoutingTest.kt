@@ -43,8 +43,15 @@ class InputRoutingTest {
     }
 
     @Test
-    fun lineShapeAndFillDoNotDraw() {
-        for (selected in listOf(Tool.LINE, Tool.SHAPE, Tool.FILL)) {
+    fun lineSelectionRoutesStylusFingerAndMouseToLine() {
+        assertEquals(Tool.LINE, InputRouting.toolForEvent(Tool.LINE, InputRouting.TOOL_TYPE_STYLUS, 0))
+        assertEquals(Tool.LINE, InputRouting.toolForEvent(Tool.LINE, InputRouting.TOOL_TYPE_FINGER, 0))
+        assertEquals(Tool.LINE, InputRouting.toolForEvent(Tool.LINE, InputRouting.TOOL_TYPE_MOUSE, 0))
+    }
+
+    @Test
+    fun shapeAndFillDoNotDraw() {
+        for (selected in listOf(Tool.SHAPE, Tool.FILL)) {
             assertNull(InputRouting.toolForEvent(selected, InputRouting.TOOL_TYPE_STYLUS, 0))
             assertNull(InputRouting.toolForEvent(selected, InputRouting.TOOL_TYPE_FINGER, 0))
             assertNull(InputRouting.toolForEvent(selected, InputRouting.TOOL_TYPE_MOUSE, 0))

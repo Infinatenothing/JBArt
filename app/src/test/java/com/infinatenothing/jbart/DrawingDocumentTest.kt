@@ -24,7 +24,16 @@ class DrawingDocumentTest {
     fun objectsStayInOrder() {
         val document = DrawingDocument()
         document.objects += stroke(1f)
-        document.objects += DrawObject.Line()
+        document.objects += DrawObject.Line(
+            x1 = 0f,
+            y1 = 0f,
+            x2 = 4f,
+            y2 = 4f,
+            color = 0xFF000000.toInt(),
+            alpha = 1f,
+            widthPx = 4f,
+            inputType = InputType.FINGER,
+        )
         assertEquals(Tool.BRUSH, document.objects[0].tool)
         assertTrue(document.objects[0] is DrawObject.Stroke)
         assertTrue(document.objects[1] is DrawObject.Line)

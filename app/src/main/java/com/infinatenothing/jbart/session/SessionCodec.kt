@@ -21,6 +21,7 @@ data class SessionSnapshot(
     val tool: Tool,
     val brush: BrushSettings,
     val eraser: BrushSettings,
+    val lineSnap: Boolean = true,
 )
 
 sealed interface SessionLoad {
@@ -30,14 +31,15 @@ sealed interface SessionLoad {
 }
 
 /**
- * Version 1 binary session.
- * magic, version, size, background, tool, brush, eraser,
- * document objects, undoCount (suffix of those objects), redo objects.
- * Strokes keep canvas pixels. The file is an autosave, not a user document.
+ * Binary session.
+ * Version 1: magic, version, size, background, tool, brush, eraser, objects, undoCount, redo.
+ * Version 2 adds the line-snap flag after the eraser and a full [DrawObject.Line] payload.
+ * Version 1 files still load. Strokes keep canvas pixels. The file is an autosave, not a user document.
  */
 object SessionCodec {
     const val MAGIC = 0x4A425331
-    const val VERSION = 1
+    const val VERSION = 2
+    private const val VERSION_LINE_PAYLOAD = 2
 
     private const val STROKE = 1
     private const val ERASE = 2
@@ -57,6 +59,7 @@ object SessionCodec {
             data.writeUTF(snapshot.tool.name)
             writeBrush(data, snapshot.brush)
             writeBrush(data, snapshot.eraser)
+            data.writeBoolean(snapshot.lineSnap)
             writeObjects(data, snapshot.objects)
             data.writeInt(snapshot.undoCount)
             writeObjects(data, snapshot.redo)
@@ -75,17 +78,18 @@ object SessionCodec {
     private fun read(data: DataInputStream): SessionLoad {
         if (data.readInt() != MAGIC) return SessionLoad.Failed("corrupt")
         val version = data.readInt()
-        if (version != VERSION) return SessionLoad.Failed("unknown version $version")
+        if (version != 1 && version != VERSION) return SessionLoad.Failed("unknown version $version")
         val width = data.readInt()
         val height = data.readInt()
         val background = data.readInt()
         val tool = enumValue<Tool>(data.readUTF()) ?: return SessionLoad.Failed("corrupt")
         val brush = readBrush(data)
         val eraser = readBrush(data)
-        val objects = readObjects(data)
+        val lineSnap = if (version >= VERSION_LINE_PAYLOAD) data.readBoolean() else true
+        val objects = readObjects(data, version)
         val undoCount = data.readInt()
         if (undoCount !in 0..objects.size) return SessionLoad.Failed("corrupt")
-        val redo = readObjects(data)
+        val redo = readObjects(data, version)
         return SessionLoad.Ok(
             SessionSnapshot(
                 width = width,
@@ -97,6 +101,7 @@ object SessionCodec {
                 tool = tool,
                 brush = brush,
                 eraser = eraser,
+                lineSnap = lineSnap,
             ),
         )
     }
@@ -115,10 +120,10 @@ object SessionCodec {
         for (obj in objects) writeObject(data, obj)
     }
 
-    private fun readObjects(data: DataInputStream): List<DrawObject> {
+    private fun readObjects(data: DataInputStream, version: Int): List<DrawObject> {
         val count = data.readInt()
         if (count < 0 || count > data.available()) throw EOFException()
-        return List(count) { readObject(data) }
+        return List(count) { readObject(data, version) }
     }
 
     private fun writeObject(data: DataOutputStream, obj: DrawObject) {
@@ -137,13 +142,23 @@ object SessionCodec {
                 data.writeUTF(obj.inputType.name)
                 writePoints(data, obj.points)
             }
-            is DrawObject.Line -> data.writeByte(LINE)
+            is DrawObject.Line -> {
+                data.writeByte(LINE)
+                data.writeFloat(obj.x1)
+                data.writeFloat(obj.y1)
+                data.writeFloat(obj.x2)
+                data.writeFloat(obj.y2)
+                data.writeInt(obj.color)
+                data.writeFloat(obj.alpha)
+                data.writeFloat(obj.widthPx)
+                data.writeUTF(obj.inputType.name)
+            }
             is DrawObject.Shape -> data.writeByte(SHAPE)
             is DrawObject.Fill -> data.writeByte(FILL)
         }
     }
 
-    private fun readObject(data: DataInputStream): DrawObject {
+    private fun readObject(data: DataInputStream, version: Int): DrawObject {
         return when (data.readUnsignedByte()) {
             STROKE -> {
                 val color = data.readInt()
@@ -167,7 +182,29 @@ object SessionCodec {
                     inputType = input,
                 )
             }
-            LINE -> DrawObject.Line()
+            LINE -> if (version >= VERSION_LINE_PAYLOAD) {
+                DrawObject.Line(
+                    x1 = data.readFloat(),
+                    y1 = data.readFloat(),
+                    x2 = data.readFloat(),
+                    y2 = data.readFloat(),
+                    color = data.readInt(),
+                    alpha = data.readFloat(),
+                    widthPx = data.readFloat(),
+                    inputType = enumValue<InputType>(data.readUTF()) ?: throw EOFException(),
+                )
+            } else {
+                DrawObject.Line(
+                    x1 = 0f,
+                    y1 = 0f,
+                    x2 = 0f,
+                    y2 = 0f,
+                    color = 0xFF000000.toInt(),
+                    alpha = 1f,
+                    widthPx = 1f,
+                    inputType = InputType.OTHER,
+                )
+            }
             SHAPE -> DrawObject.Shape()
             FILL -> DrawObject.Fill()
             else -> throw EOFException()

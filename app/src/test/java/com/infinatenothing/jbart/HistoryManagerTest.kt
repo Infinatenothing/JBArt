@@ -68,6 +68,38 @@ class HistoryManagerTest {
     }
 
     @Test
+    fun mixedStrokeEraseAndLineUndoRedoThenPushClearsRedo() {
+        val history = HistoryManager()
+        val brush = stroke(1f)
+        val erase = DrawObject.EraseStroke(
+            points = listOf(StrokePoint(2f, 0f, 1f, 0L)),
+            baseWidthPx = 16f,
+            inputType = InputType.FINGER,
+        )
+        val line = line(8f)
+        history.push(brush)
+        history.push(erase)
+        history.push(line)
+
+        assertEquals(line, history.undo())
+        assertEquals(erase, history.undo())
+        assertEquals(brush, history.undo())
+        assertFalse(history.canUndo)
+        assertEquals(brush, history.redo())
+        assertEquals(erase, history.redo())
+        assertEquals(line, history.redo())
+        assertFalse(history.canRedo)
+
+        assertEquals(line, history.undo())
+        val replacement = stroke(4f)
+        history.push(replacement)
+        assertFalse(history.canRedo)
+        assertEquals(replacement, history.undo())
+        assertEquals(erase, history.undo())
+        assertEquals(brush, history.undo())
+    }
+
+    @Test
     fun capByCountDropsOldestAndKeepsUndoRedo() {
         val history = HistoryManager(maxEntries = 2, maxPoints = 100)
         val first = stroke(1f)
@@ -121,6 +153,17 @@ class HistoryManagerTest {
         assertEquals(second, history.undo())
         assertFalse(history.canUndo)
     }
+
+    private fun line(x2: Float) = DrawObject.Line(
+        x1 = 0f,
+        y1 = 0f,
+        x2 = x2,
+        y2 = x2,
+        color = 0xFF000000.toInt(),
+        alpha = 1f,
+        widthPx = 4f,
+        inputType = InputType.STYLUS,
+    )
 
     private fun stroke(x: Float, points: Int = 1) = DrawObject.Stroke(
         points = List(points) { index -> StrokePoint(x + index, 0f, 1f, 0L) },

@@ -1,6 +1,7 @@
 package com.infinatenothing.jbart.canvas
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -19,6 +20,7 @@ import com.infinatenothing.jbart.model.InputType
 import com.infinatenothing.jbart.model.StrokePoint
 import com.infinatenothing.jbart.model.Tool
 import com.infinatenothing.jbart.model.clampBrushSettings
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -35,6 +37,14 @@ class DrawingView(context: Context) : View(context) {
     var tool = Tool.BRUSH
     var brushSettings: BrushSettings = BrushSettings()
     var eraserSettings: BrushSettings = BrushSettings(sizeDp = BrushSettings.DEFAULT_ERASER_SIZE_DP)
+    var lineSnapEnabled: Boolean = true
+        set(value) {
+            if (field == value) return
+            field = value
+            if (drawing && activeDrawTool == Tool.LINE) {
+                moveLine(lastRawX, lastRawY)
+            }
+        }
 
     private var ink: Bitmap? = null
     private var inkCanvas: Canvas? = null
@@ -61,6 +71,21 @@ class DrawingView(context: Context) : View(context) {
     private var activeDrawTool = Tool.BRUSH
     private var strokeAlpha = 1f
     private var strokeBaseWidthPx = 4f
+    private var lineStartX = 0f
+    private var lineStartY = 0f
+    private var lineEndX = 0f
+    private var lineEndY = 0f
+    private var lastRawX = 0f
+    private var lastRawY = 0f
+    private var lineMagnet = false
+    private val snapOut = FloatArray(2)
+    private val showSnapLabel =
+        (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+    private val labelBuilder = StringBuilder(32)
+    private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.BLACK
+        textSize = 32f
+    }
 
     init {
         setWillNotDraw(false)
@@ -71,6 +96,7 @@ class DrawingView(context: Context) : View(context) {
         check(MotionEvent.TOOL_TYPE_ERASER == InputRouting.TOOL_TYPE_ERASER)
         check(MotionEvent.BUTTON_STYLUS_PRIMARY == InputRouting.BUTTON_STYLUS_PRIMARY)
         check(MotionEvent.BUTTON_STYLUS_SECONDARY == InputRouting.BUTTON_STYLUS_SECONDARY)
+        labelPaint.textSize = 12f * resources.displayMetrics.density
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -116,6 +142,17 @@ class DrawingView(context: Context) : View(context) {
                 blitPaint.alpha = alphaByte(strokeAlpha)
                 canvas.drawBitmap(bitmap, 0f, 0f, blitPaint)
             }
+            if (activeDrawTool == Tool.LINE && labelBuilder.isNotEmpty()) {
+                val offset = labelPaint.textSize
+                canvas.drawText(
+                    labelBuilder,
+                    0,
+                    labelBuilder.length,
+                    lineEndX + offset,
+                    lineEndY - offset,
+                    labelPaint,
+                )
+            }
         }
     }
 
@@ -128,7 +165,8 @@ class DrawingView(context: Context) : View(context) {
             when (obj) {
                 is DrawObject.Stroke -> stampBrush(obj.points, obj.baseWidthPx, obj.alpha, obj.inputType)
                 is DrawObject.EraseStroke -> stampErase(obj.points, obj.baseWidthPx, obj.inputType)
-                is DrawObject.Line, is DrawObject.Shape, is DrawObject.Fill -> Unit
+                is DrawObject.Line -> stampLine(obj.x1, obj.y1, obj.x2, obj.y2, obj.color, obj.widthPx, obj.alpha)
+                is DrawObject.Shape, is DrawObject.Fill -> Unit
             }
         }
         clearScratch()
@@ -155,10 +193,10 @@ class DrawingView(context: Context) : View(context) {
         }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                if (drawing) discardStroke()
+                if (drawing) discardActive()
                 val routed = InputRouting.toolForEvent(tool, event.getToolType(0), event.buttonState)
                 if (routed == null) return true
-                beginStroke(event, 0, routed)
+                if (routed == Tool.LINE) beginLine(event, 0) else beginStroke(event, 0, routed)
             }
             MotionEvent.ACTION_POINTER_DOWN -> Unit
             MotionEvent.ACTION_MOVE -> {
@@ -166,19 +204,23 @@ class DrawingView(context: Context) : View(context) {
                 val index = event.findPointerIndex(activePointerId)
                 if (index < 0) return true
                 if (ignoredPointer(event, index)) return true
-                addSamples(event, index)
+                if (activeDrawTool == Tool.LINE) {
+                    moveLine(event.getX(index), event.getY(index))
+                } else {
+                    addSamples(event, index)
+                }
             }
             MotionEvent.ACTION_POINTER_UP -> {
                 if (event.getPointerId(event.actionIndex) == activePointerId) {
-                    commitStroke(event)
+                    finishGesture(event)
                 }
             }
             MotionEvent.ACTION_UP -> {
                 if (drawing && event.getPointerId(event.actionIndex) == activePointerId) {
-                    commitStroke(event)
+                    finishGesture(event)
                 }
             }
-            MotionEvent.ACTION_CANCEL -> discardStroke()
+            MotionEvent.ACTION_CANCEL -> discardActive()
         }
         return true
     }
@@ -197,6 +239,117 @@ class DrawingView(context: Context) : View(context) {
         clearScratch()
         addCurrent(event, index)
         Log.d(TAG, "begin routed=$routed input=$inputType sizePx=$strokeBaseWidthPx alpha=$strokeAlpha")
+    }
+
+    private fun finishGesture(event: MotionEvent) {
+        if (activeDrawTool == Tool.LINE) commitLine(event) else commitStroke(event)
+    }
+
+    private fun beginLine(event: MotionEvent, index: Int) {
+        activePointerId = event.getPointerId(index)
+        val toolType = event.getToolType(index)
+        inputType = inputTypeOf(toolType)
+        stylusActive = toolType == MotionEvent.TOOL_TYPE_STYLUS
+        activeDrawTool = Tool.LINE
+        val settings = clampBrushSettings(brushSettings)
+        strokeBaseWidthPx = settings.sizeDp * resources.displayMetrics.density
+        strokeAlpha = settings.opacity
+        drawing = true
+        lineStartX = event.getX(index)
+        lineStartY = event.getY(index)
+        lineEndX = lineStartX
+        lineEndY = lineStartY
+        lastRawX = lineStartX
+        lastRawY = lineStartY
+        lineMagnet = false
+        labelBuilder.setLength(0)
+        clearScratch()
+        Log.d(
+            TAG,
+            "line begin start=$lineStartX,$lineStartY snap=$lineSnapEnabled sizePx=$strokeBaseWidthPx alpha=$strokeAlpha",
+        )
+    }
+
+    private fun moveLine(rawX: Float, rawY: Float) {
+        val previousX = lineEndX
+        val previousY = lineEndY
+        lastRawX = rawX
+        lastRawY = rawY
+        lineMagnet = LineSnap.snapInto(
+            lineStartX,
+            lineStartY,
+            rawX,
+            rawY,
+            LineSnap.SNAP_STEP_DEG,
+            LineSnap.SNAP_TOLERANCE_DEG,
+            lineSnapEnabled,
+            snapOut,
+        )
+        lineEndX = snapOut[0]
+        lineEndY = snapOut[1]
+        val rawAngle = LineSnap.angleDeg(lineStartX, lineStartY, rawX, rawY)
+        val snappedAngle = LineSnap.angleDeg(lineStartX, lineStartY, lineEndX, lineEndY)
+        labelBuilder.setLength(0)
+        if (showSnapLabel && lineMagnet) {
+            val length = hypot(lineEndX - lineStartX, lineEndY - lineStartY)
+            labelBuilder.append(snappedAngle.roundToInt())
+            labelBuilder.append(" deg  ")
+            labelBuilder.append(length.roundToInt())
+            labelBuilder.append(" px")
+        }
+        scratchCanvas?.let { canvas ->
+            clearScratch()
+            if (lineStartX != lineEndX || lineStartY != lineEndY) {
+                drawLineOn(canvas, lineStartX, lineStartY, lineEndX, lineEndY, Color.BLACK, strokeBaseWidthPx)
+            }
+        }
+        invalidateSegment(lineStartX, lineStartY, previousX, previousY, strokeBaseWidthPx)
+        invalidateSegment(lineStartX, lineStartY, lineEndX, lineEndY, strokeBaseWidthPx)
+        Log.d(
+            TAG,
+            "line start=$lineStartX,$lineStartY end=$lineEndX,$lineEndY rawAngle=$rawAngle snappedAngle=$snappedAngle snap=$lineSnapEnabled",
+        )
+    }
+
+    private fun commitLine(event: MotionEvent) {
+        if (!drawing) return
+        val index = event.findPointerIndex(activePointerId)
+        if (index >= 0 && !ignoredPointer(event, index)) {
+            moveLine(event.getX(index), event.getY(index))
+        }
+        val x1 = lineStartX
+        val y1 = lineStartY
+        val x2 = lineEndX
+        val y2 = lineEndY
+        val width = strokeBaseWidthPx
+        val alpha = strokeAlpha
+        val type = inputType
+        val length = hypot(x2 - x1, y2 - y1)
+        val minimum = MIN_LINE_DP * resources.displayMetrics.density
+        endGesture()
+        labelBuilder.setLength(0)
+        clearScratch()
+        if (length < minimum) {
+            Log.d(TAG, "line discarded length=$length min=$minimum")
+            invalidateSegment(x1, y1, x2, y2, width)
+            return
+        }
+        stampLine(x1, y1, x2, y2, Color.BLACK, width, alpha)
+        onCommit(
+            DrawObject.Line(
+                x1 = x1,
+                y1 = y1,
+                x2 = x2,
+                y2 = y2,
+                color = Color.BLACK,
+                alpha = alpha,
+                widthPx = width,
+                inputType = type,
+            ),
+        )
+        ink?.prepareToDraw()
+        invalidate()
+        Log.d(TAG, "line commit start=$x1,$y1 end=$x2,$y2 length=$length snap=$lineSnapEnabled")
     }
 
     private fun commitStroke(event: MotionEvent) {
@@ -240,6 +393,23 @@ class DrawingView(context: Context) : View(context) {
         onCommit(obj)
         ink?.prepareToDraw()
         invalidate()
+    }
+
+    private fun discardActive() {
+        if (activeDrawTool == Tool.LINE) discardLine() else discardStroke()
+    }
+
+    private fun discardLine() {
+        val x1 = lineStartX
+        val y1 = lineStartY
+        val x2 = lineEndX
+        val y2 = lineEndY
+        val width = strokeBaseWidthPx
+        endGesture()
+        labelBuilder.setLength(0)
+        clearScratch()
+        invalidateSegment(x1, y1, x2, y2, width)
+        Log.d(TAG, "line cancel")
     }
 
     private fun discardStroke() {
@@ -316,6 +486,55 @@ class DrawingView(context: Context) : View(context) {
         blitPaint.alpha = alphaByte(alpha)
         target.drawBitmap(scratch!!, 0f, 0f, blitPaint)
         clearScratch()
+    }
+
+    private fun stampLine(
+        x1: Float,
+        y1: Float,
+        x2: Float,
+        y2: Float,
+        color: Int,
+        width: Float,
+        alpha: Float,
+    ) {
+        if (x1 == x2 && y1 == y2) return
+        val canvas = scratchCanvas ?: return
+        val target = inkCanvas ?: return
+        clearScratch()
+        geometryXfer = null
+        drawLineOn(canvas, x1, y1, x2, y2, color, width)
+        scratch?.prepareToDraw()
+        blitPaint.xfermode = null
+        blitPaint.alpha = alphaByte(alpha)
+        target.drawBitmap(scratch!!, 0f, 0f, blitPaint)
+        clearScratch()
+    }
+
+    private fun drawLineOn(
+        canvas: Canvas,
+        x1: Float,
+        y1: Float,
+        x2: Float,
+        y2: Float,
+        color: Int,
+        width: Float,
+    ) {
+        path.rewind()
+        path.moveTo(x1, y1)
+        path.lineTo(x2, y2)
+        strokePaint.xfermode = geometryXfer
+        strokePaint.alpha = 255
+        strokePaint.style = Paint.Style.STROKE
+        strokePaint.strokeCap = Paint.Cap.ROUND
+        strokePaint.strokeJoin = Paint.Join.ROUND
+        strokePaint.color = color
+        strokePaint.strokeWidth = width
+        canvas.drawPath(path, strokePaint)
+    }
+
+    private fun invalidateSegment(x1: Float, y1: Float, x2: Float, y2: Float, width: Float) {
+        val extra = if (showSnapLabel) labelPaint.textSize * 8f else 0f
+        invalidateHull(x1, y1, x2, y2, x2, y2, width + extra)
     }
 
     private fun stampErase(points: List<StrokePoint>, width: Float, type: InputType) {
@@ -468,5 +687,6 @@ class DrawingView(context: Context) : View(context) {
 
     private companion object {
         const val TAG = "DrawingView"
+        const val MIN_LINE_DP = 4f
     }
 }
