@@ -9,6 +9,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import android.graphics.RectF
 import android.graphics.Xfermode
 import android.util.Log
 import android.view.MotionEvent
@@ -17,6 +18,7 @@ import com.infinatenothing.jbart.model.BrushSettings
 import com.infinatenothing.jbart.model.DrawObject
 import com.infinatenothing.jbart.model.DrawingDocument
 import com.infinatenothing.jbart.model.InputType
+import com.infinatenothing.jbart.model.ShapeKind
 import com.infinatenothing.jbart.model.StrokePoint
 import com.infinatenothing.jbart.model.Tool
 import com.infinatenothing.jbart.model.clampBrushSettings
@@ -28,7 +30,9 @@ import kotlin.math.roundToInt
 /**
  * White background composited under a transparent ink bitmap.
  * Brush strokes are built opaque on a scratch bitmap and blitted once with the stroke alpha,
- * so a stroke does not darken where it crosses itself. Erases punch that ink with CLEAR.
+ * so a stroke does not darken where it crosses itself. A shape is drawn the same way:
+ * opaque on the scratch bitmap, then blitted once with the brush alpha.
+ * Erases punch that ink with CLEAR.
  */
 class DrawingView(context: Context) : View(context) {
     var document: DrawingDocument? = null
@@ -45,6 +49,24 @@ class DrawingView(context: Context) : View(context) {
                 moveLine(lastRawX, lastRawY)
             }
         }
+    var shapeKind: ShapeKind = ShapeKind.RECTANGLE
+        set(value) {
+            if (field == value) return
+            field = value
+            refreshShapePreview("kind=$value")
+        }
+    var shapeConstrain: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            refreshShapePreview("constrain=$value")
+        }
+    var shapeFilled: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            refreshShapePreview("filled=$value")
+        }
 
     private var ink: Bitmap? = null
     private var inkCanvas: Canvas? = null
@@ -59,6 +81,7 @@ class DrawingView(context: Context) : View(context) {
     }
     private val blitPaint = Paint()
     private val path = Path()
+    private val shapeRect = RectF()
     private val segment = SegmentBuffer()
     private val strokePoints = ArrayList<StrokePoint>(64)
     private val clearMode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
@@ -79,6 +102,16 @@ class DrawingView(context: Context) : View(context) {
     private var lastRawY = 0f
     private var lineMagnet = false
     private val snapOut = FloatArray(2)
+    private var shapeStartX = 0f
+    private var shapeStartY = 0f
+    private var shapeEndX = 0f
+    private var shapeEndY = 0f
+    private val shapeEndOut = FloatArray(2)
+    private val shapeBox = FloatArray(4)
+    private val shapeTri = FloatArray(6)
+    private val shapeHead = FloatArray(6)
+    private val shapeBounds = FloatArray(4)
+    private val prevShapeBounds = FloatArray(4)
     private val showSnapLabel =
         (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
     private val labelBuilder = StringBuilder(32)
@@ -166,7 +199,8 @@ class DrawingView(context: Context) : View(context) {
                 is DrawObject.Stroke -> stampBrush(obj.points, obj.baseWidthPx, obj.alpha, obj.inputType)
                 is DrawObject.EraseStroke -> stampErase(obj.points, obj.baseWidthPx, obj.inputType)
                 is DrawObject.Line -> stampLine(obj.x1, obj.y1, obj.x2, obj.y2, obj.color, obj.widthPx, obj.alpha)
-                is DrawObject.Shape, is DrawObject.Fill -> Unit
+                is DrawObject.Shape -> stampShape(obj)
+                is DrawObject.Fill -> Unit
             }
         }
         clearScratch()
@@ -196,7 +230,11 @@ class DrawingView(context: Context) : View(context) {
                 if (drawing) discardActive()
                 val routed = InputRouting.toolForEvent(tool, event.getToolType(0), event.buttonState)
                 if (routed == null) return true
-                if (routed == Tool.LINE) beginLine(event, 0) else beginStroke(event, 0, routed)
+                when (routed) {
+                    Tool.LINE -> beginLine(event, 0)
+                    Tool.SHAPE -> beginShape(event, 0)
+                    else -> beginStroke(event, 0, routed)
+                }
             }
             MotionEvent.ACTION_POINTER_DOWN -> Unit
             MotionEvent.ACTION_MOVE -> {
@@ -204,10 +242,10 @@ class DrawingView(context: Context) : View(context) {
                 val index = event.findPointerIndex(activePointerId)
                 if (index < 0) return true
                 if (ignoredPointer(event, index)) return true
-                if (activeDrawTool == Tool.LINE) {
-                    moveLine(event.getX(index), event.getY(index))
-                } else {
-                    addSamples(event, index)
+                when (activeDrawTool) {
+                    Tool.LINE -> moveLine(event.getX(index), event.getY(index))
+                    Tool.SHAPE -> moveShape(event.getX(index), event.getY(index))
+                    else -> addSamples(event, index)
                 }
             }
             MotionEvent.ACTION_POINTER_UP -> {
@@ -242,7 +280,11 @@ class DrawingView(context: Context) : View(context) {
     }
 
     private fun finishGesture(event: MotionEvent) {
-        if (activeDrawTool == Tool.LINE) commitLine(event) else commitStroke(event)
+        when (activeDrawTool) {
+            Tool.LINE -> commitLine(event)
+            Tool.SHAPE -> commitShape(event)
+            else -> commitStroke(event)
+        }
     }
 
     private fun beginLine(event: MotionEvent, index: Int) {
@@ -396,7 +438,11 @@ class DrawingView(context: Context) : View(context) {
     }
 
     private fun discardActive() {
-        if (activeDrawTool == Tool.LINE) discardLine() else discardStroke()
+        when (activeDrawTool) {
+            Tool.LINE -> discardLine()
+            Tool.SHAPE -> discardShape()
+            else -> discardStroke()
+        }
     }
 
     private fun discardLine() {
@@ -535,6 +581,281 @@ class DrawingView(context: Context) : View(context) {
     private fun invalidateSegment(x1: Float, y1: Float, x2: Float, y2: Float, width: Float) {
         val extra = if (showSnapLabel) labelPaint.textSize * 8f else 0f
         invalidateHull(x1, y1, x2, y2, x2, y2, width + extra)
+    }
+
+    private fun refreshShapePreview(reason: String) {
+        if (!drawing || activeDrawTool != Tool.SHAPE) return
+        Log.d(
+            TAG,
+            "shape update $reason kind=$shapeKind constrain=$shapeConstrain filled=$shapeFilled",
+        )
+        moveShape(lastRawX, lastRawY)
+    }
+
+    private fun beginShape(event: MotionEvent, index: Int) {
+        activePointerId = event.getPointerId(index)
+        val toolType = event.getToolType(index)
+        inputType = inputTypeOf(toolType)
+        stylusActive = toolType == MotionEvent.TOOL_TYPE_STYLUS
+        activeDrawTool = Tool.SHAPE
+        val settings = clampBrushSettings(brushSettings)
+        strokeBaseWidthPx = settings.sizeDp * resources.displayMetrics.density
+        strokeAlpha = settings.opacity
+        drawing = true
+        shapeStartX = event.getX(index)
+        shapeStartY = event.getY(index)
+        shapeEndX = shapeStartX
+        shapeEndY = shapeStartY
+        lastRawX = shapeStartX
+        lastRawY = shapeStartY
+        clearScratch()
+        Log.d(
+            TAG,
+            "shape begin kind=$shapeKind start=$shapeStartX,$shapeStartY constrain=$shapeConstrain filled=$shapeFilled sizePx=$strokeBaseWidthPx alpha=$strokeAlpha",
+        )
+    }
+
+    private fun moveShape(rawX: Float, rawY: Float) {
+        ShapeGeometry.boundsInto(
+            shapeKind,
+            shapeStartX,
+            shapeStartY,
+            shapeEndX,
+            shapeEndY,
+            shapeFilled,
+            strokeBaseWidthPx,
+            minArrowHeadPx(),
+            prevShapeBounds,
+        )
+        lastRawX = rawX
+        lastRawY = rawY
+        ShapeGeometry.constrainInto(
+            shapeKind,
+            shapeStartX,
+            shapeStartY,
+            rawX,
+            rawY,
+            shapeConstrain,
+            shapeEndOut,
+        )
+        shapeEndX = shapeEndOut[0]
+        shapeEndY = shapeEndOut[1]
+        scratchCanvas?.let { canvas ->
+            clearScratch()
+            if (shapeStartX != shapeEndX || shapeStartY != shapeEndY) {
+                drawShapeOn(
+                    canvas,
+                    shapeKind,
+                    shapeStartX,
+                    shapeStartY,
+                    shapeEndX,
+                    shapeEndY,
+                    shapeFilled,
+                    Color.BLACK,
+                    strokeBaseWidthPx,
+                )
+            }
+        }
+        ShapeGeometry.boundsInto(
+            shapeKind,
+            shapeStartX,
+            shapeStartY,
+            shapeEndX,
+            shapeEndY,
+            shapeFilled,
+            strokeBaseWidthPx,
+            minArrowHeadPx(),
+            shapeBounds,
+        )
+        invalidateBounds(prevShapeBounds)
+        invalidateBounds(shapeBounds)
+    }
+
+    private fun commitShape(event: MotionEvent) {
+        if (!drawing) return
+        val index = event.findPointerIndex(activePointerId)
+        if (index >= 0 && !ignoredPointer(event, index)) {
+            moveShape(event.getX(index), event.getY(index))
+        }
+        val kind = shapeKind
+        val x1 = shapeStartX
+        val y1 = shapeStartY
+        val x2 = shapeEndX
+        val y2 = shapeEndY
+        val filled = shapeFilled
+        val constrain = shapeConstrain
+        val width = strokeBaseWidthPx
+        val alpha = strokeAlpha
+        val type = inputType
+        val span = hypot(x2 - x1, y2 - y1)
+        val minimum = MIN_SHAPE_DP * resources.displayMetrics.density
+        endGesture()
+        clearScratch()
+        if (span < minimum) {
+            Log.d(TAG, "shape discarded kind=$kind span=$span min=$minimum constrain=$constrain filled=$filled")
+            ShapeGeometry.boundsInto(kind, x1, y1, x2, y2, filled, width, minArrowHeadPx(), shapeBounds)
+            invalidateBounds(shapeBounds)
+            return
+        }
+        stampShape(kind, x1, y1, x2, y2, filled, Color.BLACK, width, alpha)
+        onCommit(
+            DrawObject.Shape(
+                kind = kind,
+                x1 = x1,
+                y1 = y1,
+                x2 = x2,
+                y2 = y2,
+                filled = filled,
+                color = Color.BLACK,
+                alpha = alpha,
+                widthPx = width,
+                inputType = type,
+            ),
+        )
+        ink?.prepareToDraw()
+        invalidate()
+        Log.d(
+            TAG,
+            "shape commit kind=$kind start=$x1,$y1 end=$x2,$y2 constrain=$constrain filled=$filled span=$span",
+        )
+    }
+
+    private fun discardShape() {
+        val kind = shapeKind
+        val x1 = shapeStartX
+        val y1 = shapeStartY
+        val x2 = shapeEndX
+        val y2 = shapeEndY
+        val filled = shapeFilled
+        val width = strokeBaseWidthPx
+        endGesture()
+        clearScratch()
+        ShapeGeometry.boundsInto(kind, x1, y1, x2, y2, filled, width, minArrowHeadPx(), shapeBounds)
+        invalidateBounds(shapeBounds)
+        Log.d(TAG, "shape cancel kind=$kind constrain=$shapeConstrain filled=$shapeFilled")
+    }
+
+    private fun stampShape(obj: DrawObject.Shape) {
+        stampShape(
+            obj.kind,
+            obj.x1,
+            obj.y1,
+            obj.x2,
+            obj.y2,
+            obj.filled,
+            obj.color,
+            obj.widthPx,
+            obj.alpha,
+        )
+    }
+
+    private fun stampShape(
+        kind: ShapeKind,
+        x1: Float,
+        y1: Float,
+        x2: Float,
+        y2: Float,
+        filled: Boolean,
+        color: Int,
+        width: Float,
+        alpha: Float,
+    ) {
+        if (x1 == x2 && y1 == y2) return
+        val canvas = scratchCanvas ?: return
+        val target = inkCanvas ?: return
+        clearScratch()
+        geometryXfer = null
+        drawShapeOn(canvas, kind, x1, y1, x2, y2, filled, color, width)
+        scratch?.prepareToDraw()
+        blitPaint.xfermode = null
+        blitPaint.alpha = alphaByte(alpha)
+        target.drawBitmap(scratch!!, 0f, 0f, blitPaint)
+        clearScratch()
+    }
+
+    private fun drawShapeOn(
+        canvas: Canvas,
+        kind: ShapeKind,
+        x1: Float,
+        y1: Float,
+        x2: Float,
+        y2: Float,
+        filled: Boolean,
+        color: Int,
+        width: Float,
+    ) {
+        strokePaint.xfermode = geometryXfer
+        strokePaint.alpha = 255
+        strokePaint.color = color
+        strokePaint.strokeWidth = width
+        when (kind) {
+            ShapeKind.RECTANGLE, ShapeKind.ELLIPSE -> {
+                ShapeGeometry.normalizedBoxInto(x1, y1, x2, y2, shapeBox)
+                shapeRect.set(shapeBox[0], shapeBox[1], shapeBox[2], shapeBox[3])
+                strokePaint.style = if (filled) Paint.Style.FILL else Paint.Style.STROKE
+                strokePaint.strokeJoin = if (kind == ShapeKind.ELLIPSE) Paint.Join.ROUND else Paint.Join.MITER
+                strokePaint.strokeMiter = ShapeGeometry.MITER_LIMIT
+                if (kind == ShapeKind.ELLIPSE) {
+                    canvas.drawOval(shapeRect, strokePaint)
+                } else {
+                    canvas.drawRect(shapeRect, strokePaint)
+                }
+            }
+            ShapeKind.TRIANGLE -> {
+                ShapeGeometry.trianglePointsInto(x1, y1, x2, y2, shapeTri)
+                path.rewind()
+                path.moveTo(shapeTri[0], shapeTri[1])
+                path.lineTo(shapeTri[2], shapeTri[3])
+                path.lineTo(shapeTri[4], shapeTri[5])
+                path.close()
+                strokePaint.style = if (filled) Paint.Style.FILL else Paint.Style.STROKE
+                strokePaint.strokeJoin = Paint.Join.MITER
+                strokePaint.strokeMiter = ShapeGeometry.MITER_LIMIT
+                canvas.drawPath(path, strokePaint)
+            }
+            ShapeKind.ARROW -> {
+                if (x1 != x2 || y1 != y2) {
+                    path.rewind()
+                    path.moveTo(x1, y1)
+                    path.lineTo(x2, y2)
+                    strokePaint.style = Paint.Style.STROKE
+                    strokePaint.strokeCap = Paint.Cap.ROUND
+                    strokePaint.strokeJoin = Paint.Join.ROUND
+                    canvas.drawPath(path, strokePaint)
+                }
+                val shaft = hypot(x2 - x1, y2 - y1)
+                val headLength = ShapeGeometry.arrowHeadLength(width, shaft, minArrowHeadPx())
+                if (headLength <= 0f) return
+                ShapeGeometry.arrowHeadInto(x1, y1, x2, y2, headLength, shapeHead)
+                path.rewind()
+                path.moveTo(shapeHead[2], shapeHead[3])
+                path.lineTo(shapeHead[0], shapeHead[1])
+                path.lineTo(shapeHead[4], shapeHead[5])
+                if (filled) {
+                    path.close()
+                    strokePaint.style = Paint.Style.FILL
+                } else {
+                    strokePaint.style = Paint.Style.STROKE
+                    strokePaint.strokeCap = Paint.Cap.ROUND
+                    strokePaint.strokeJoin = Paint.Join.ROUND
+                }
+                canvas.drawPath(path, strokePaint)
+            }
+        }
+    }
+
+    private fun minArrowHeadPx(): Float {
+        return ShapeGeometry.MIN_ARROW_HEAD_DP * resources.displayMetrics.density
+    }
+
+    private fun invalidateBounds(bounds: FloatArray) {
+        @Suppress("DEPRECATION")
+        invalidate(
+            bounds[0].toInt(),
+            bounds[1].toInt(),
+            bounds[2].toInt() + 1,
+            bounds[3].toInt() + 1,
+        )
     }
 
     private fun stampErase(points: List<StrokePoint>, width: Float, type: InputType) {
@@ -688,5 +1009,6 @@ class DrawingView(context: Context) : View(context) {
     private companion object {
         const val TAG = "DrawingView"
         const val MIN_LINE_DP = 4f
+        const val MIN_SHAPE_DP = 4f
     }
 }

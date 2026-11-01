@@ -70,6 +70,9 @@ fun DrawingScreen(model: DrawingViewModel) {
                 view.brushSettings = brushSettings
                 view.eraserSettings = eraserSettings
                 view.lineSnapEnabled = model.lineSnapEnabled
+                view.shapeKind = model.shapeKind
+                view.shapeConstrain = model.shapeConstrain
+                view.shapeFilled = model.shapeFilled
                 view.onCommit = { model.commit(it) }
                 view.sync(model.document, revision)
             },
@@ -86,6 +89,12 @@ fun DrawingScreen(model: DrawingViewModel) {
             eraserSettings = eraserSettings,
             lineSnapEnabled = model.lineSnapEnabled,
             onLineSnap = { model.setLineSnap(it) },
+            shapeKind = model.shapeKind,
+            shapeConstrain = model.shapeConstrain,
+            shapeFilled = model.shapeFilled,
+            onShapeKind = { model.updateShapeKind(it) },
+            onShapeConstrain = { model.updateShapeConstrain(it) },
+            onShapeFilled = { model.updateShapeFilled(it) },
             settingsTool = settingsTool,
             onSelectTool = { tool ->
                 model.selectTool(tool)

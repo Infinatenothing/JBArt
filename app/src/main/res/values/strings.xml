@@ -5,6 +5,12 @@
     <string name="tool_line">Line</string>
     <string name="snap_angle">Snap angle</string>
     <string name="tool_shape">Shape</string>
+    <string name="shape_rectangle">Rectangle</string>
+    <string name="shape_ellipse">Ellipse</string>
+    <string name="shape_triangle">Triangle</string>
+    <string name="shape_arrow">Arrow</string>
+    <string name="shape_constrain">Constrain proportions</string>
+    <string name="shape_filled">Filled</string>
     <string name="tool_fill">Fill</string>
     <string name="action_color">Color</string>
     <string name="action_undo">Undo</string>

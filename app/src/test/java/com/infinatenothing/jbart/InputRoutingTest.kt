@@ -50,11 +50,28 @@ class InputRoutingTest {
     }
 
     @Test
-    fun shapeAndFillDoNotDraw() {
-        for (selected in listOf(Tool.SHAPE, Tool.FILL)) {
-            assertNull(InputRouting.toolForEvent(selected, InputRouting.TOOL_TYPE_STYLUS, 0))
-            assertNull(InputRouting.toolForEvent(selected, InputRouting.TOOL_TYPE_FINGER, 0))
-            assertNull(InputRouting.toolForEvent(selected, InputRouting.TOOL_TYPE_MOUSE, 0))
-        }
+    fun shapeSelectionRoutesFingerStylusAndMouseToShape() {
+        assertEquals(Tool.SHAPE, InputRouting.toolForEvent(Tool.SHAPE, InputRouting.TOOL_TYPE_FINGER, 0))
+        assertEquals(Tool.SHAPE, InputRouting.toolForEvent(Tool.SHAPE, InputRouting.TOOL_TYPE_STYLUS, 0))
+        assertEquals(Tool.SHAPE, InputRouting.toolForEvent(Tool.SHAPE, InputRouting.TOOL_TYPE_MOUSE, 0))
+        assertEquals(
+            Tool.ERASER,
+            InputRouting.toolForEvent(Tool.SHAPE, InputRouting.TOOL_TYPE_ERASER, 0),
+        )
+        assertEquals(
+            Tool.ERASER,
+            InputRouting.toolForEvent(Tool.SHAPE, InputRouting.TOOL_TYPE_STYLUS, InputRouting.BUTTON_STYLUS_PRIMARY),
+        )
+        assertEquals(
+            Tool.ERASER,
+            InputRouting.toolForEvent(Tool.SHAPE, InputRouting.TOOL_TYPE_STYLUS, InputRouting.BUTTON_STYLUS_SECONDARY),
+        )
+    }
+
+    @Test
+    fun fillDoesNotDraw() {
+        assertNull(InputRouting.toolForEvent(Tool.FILL, InputRouting.TOOL_TYPE_STYLUS, 0))
+        assertNull(InputRouting.toolForEvent(Tool.FILL, InputRouting.TOOL_TYPE_FINGER, 0))
+        assertNull(InputRouting.toolForEvent(Tool.FILL, InputRouting.TOOL_TYPE_MOUSE, 0))
     }
 }
