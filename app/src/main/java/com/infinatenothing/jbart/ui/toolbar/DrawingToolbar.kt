@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -19,9 +20,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Brush
+import androidx.compose.material.icons.filled.ChangeHistory
 import androidx.compose.material.icons.filled.CropSquare
 import androidx.compose.material.icons.filled.FormatColorFill
+import androidx.compose.material.icons.filled.NorthEast
+import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Straighten
@@ -53,6 +58,7 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import com.infinatenothing.jbart.R
 import com.infinatenothing.jbart.model.BrushSettings
+import com.infinatenothing.jbart.model.ShapeKind
 import com.infinatenothing.jbart.model.Tool
 
 @Composable
@@ -66,6 +72,12 @@ fun DrawingToolbar(
     eraserSettings: BrushSettings,
     lineSnapEnabled: Boolean,
     onLineSnap: (Boolean) -> Unit,
+    shapeKind: ShapeKind,
+    shapeConstrain: Boolean,
+    shapeFilled: Boolean,
+    onShapeKind: (ShapeKind) -> Unit,
+    onShapeConstrain: (Boolean) -> Unit,
+    onShapeFilled: (Boolean) -> Unit,
     settingsTool: Tool?,
     onSelectTool: (Tool) -> Unit,
     onOpenSettings: (Tool) -> Unit,
@@ -186,6 +198,26 @@ fun DrawingToolbar(
             if (item.tag == "tool_line" && selectedTool == Tool.LINE) {
                 SnapToggle(enabled = lineSnapEnabled, onToggle = onLineSnap)
             }
+            if (item.tag == "tool_shape" && selectedTool == Tool.SHAPE) {
+                ShapeKindButton(ShapeKind.RECTANGLE, shapeKind, onShapeKind)
+                ShapeKindButton(ShapeKind.ELLIPSE, shapeKind, onShapeKind)
+                ShapeKindButton(ShapeKind.TRIANGLE, shapeKind, onShapeKind)
+                ShapeKindButton(ShapeKind.ARROW, shapeKind, onShapeKind)
+                ShapeFlagToggle(
+                    tag = "shape_constrain_toggle",
+                    description = stringResource(R.string.shape_constrain),
+                    icon = Icons.Filled.AspectRatio,
+                    enabled = shapeConstrain,
+                    onToggle = onShapeConstrain,
+                )
+                ShapeFlagToggle(
+                    tag = "shape_fill_toggle",
+                    description = stringResource(R.string.shape_filled),
+                    icon = Icons.Filled.FormatColorFill,
+                    enabled = shapeFilled,
+                    onToggle = onShapeFilled,
+                )
+            }
         }
     }
     if (vertical) {
@@ -270,6 +302,73 @@ private fun SnapToggle(enabled: Boolean, onToggle: (Boolean) -> Unit) {
             tint = tint,
             modifier = Modifier.size(24.dp),
         )
+    }
+}
+
+@Composable
+private fun ShapeKindButton(
+    kind: ShapeKind,
+    selectedKind: ShapeKind,
+    onSelect: (ShapeKind) -> Unit,
+) {
+    val selected = kind == selectedKind
+    val (tag, description, icon) = when (kind) {
+        ShapeKind.RECTANGLE -> Triple(
+            "shape_kind_rectangle",
+            stringResource(R.string.shape_rectangle),
+            Icons.Filled.CropSquare,
+        )
+        ShapeKind.ELLIPSE -> Triple(
+            "shape_kind_ellipse",
+            stringResource(R.string.shape_ellipse),
+            Icons.Outlined.Circle,
+        )
+        ShapeKind.TRIANGLE -> Triple(
+            "shape_kind_triangle",
+            stringResource(R.string.shape_triangle),
+            Icons.Filled.ChangeHistory,
+        )
+        ShapeKind.ARROW -> Triple(
+            "shape_kind_arrow",
+            stringResource(R.string.shape_arrow),
+            Icons.Filled.NorthEast,
+        )
+    }
+    val background = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent
+    val tint = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+    Box(
+        modifier = Modifier
+            .testTag(tag)
+            .size(48.dp)
+            .clip(CircleShape)
+            .background(background)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = { onSelect(kind) }),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.size(24.dp))
+    }
+}
+
+@Composable
+private fun ShapeFlagToggle(
+    tag: String,
+    description: String,
+    icon: ImageVector,
+    enabled: Boolean,
+    onToggle: (Boolean) -> Unit,
+) {
+    val background = if (enabled) MaterialTheme.colorScheme.primary else Color.Transparent
+    val tint = if (enabled) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+    Box(
+        modifier = Modifier
+            .testTag(tag)
+            .size(48.dp)
+            .clip(CircleShape)
+            .background(background)
+            .toggleable(value = enabled, role = Role.Switch, onValueChange = onToggle),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.size(24.dp))
     }
 }
 

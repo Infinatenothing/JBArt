@@ -3,6 +3,7 @@ package com.infinatenothing.jbart.session
 import com.infinatenothing.jbart.model.BrushSettings
 import com.infinatenothing.jbart.model.DrawObject
 import com.infinatenothing.jbart.model.InputType
+import com.infinatenothing.jbart.model.ShapeKind
 import com.infinatenothing.jbart.model.StrokePoint
 import com.infinatenothing.jbart.model.Tool
 import java.io.ByteArrayInputStream
@@ -22,6 +23,9 @@ data class SessionSnapshot(
     val brush: BrushSettings,
     val eraser: BrushSettings,
     val lineSnap: Boolean = true,
+    val shapeKind: ShapeKind = ShapeKind.RECTANGLE,
+    val shapeConstrain: Boolean = false,
+    val shapeFilled: Boolean = false,
 )
 
 sealed interface SessionLoad {
@@ -34,12 +38,16 @@ sealed interface SessionLoad {
  * Binary session.
  * Version 1: magic, version, size, background, tool, brush, eraser, objects, undoCount, redo.
  * Version 2 adds the line-snap flag after the eraser and a full [DrawObject.Line] payload.
- * Version 1 files still load. Strokes keep canvas pixels. The file is an autosave, not a user document.
+ * Version 3 adds shape kind, constrain, and filled after line-snap, and a full [DrawObject.Shape] payload.
+ * A version 1 or 2 shape tag has no payload and is dropped. [SessionSnapshot.undoCount] is then
+ * clamped to the remaining object count. Version 1 and 2 files still load.
+ * Strokes keep canvas pixels. The file is an autosave, not a user document.
  */
 object SessionCodec {
     const val MAGIC = 0x4A425331
-    const val VERSION = 2
+    const val VERSION = 3
     private const val VERSION_LINE_PAYLOAD = 2
+    private const val VERSION_SHAPE_PAYLOAD = 3
 
     private const val STROKE = 1
     private const val ERASE = 2
@@ -60,6 +68,9 @@ object SessionCodec {
             writeBrush(data, snapshot.brush)
             writeBrush(data, snapshot.eraser)
             data.writeBoolean(snapshot.lineSnap)
+            data.writeUTF(snapshot.shapeKind.name)
+            data.writeBoolean(snapshot.shapeConstrain)
+            data.writeBoolean(snapshot.shapeFilled)
             writeObjects(data, snapshot.objects)
             data.writeInt(snapshot.undoCount)
             writeObjects(data, snapshot.redo)
@@ -78,7 +89,7 @@ object SessionCodec {
     private fun read(data: DataInputStream): SessionLoad {
         if (data.readInt() != MAGIC) return SessionLoad.Failed("corrupt")
         val version = data.readInt()
-        if (version != 1 && version != VERSION) return SessionLoad.Failed("unknown version $version")
+        if (version !in 1..VERSION) return SessionLoad.Failed("unknown version $version")
         val width = data.readInt()
         val height = data.readInt()
         val background = data.readInt()
@@ -86,8 +97,25 @@ object SessionCodec {
         val brush = readBrush(data)
         val eraser = readBrush(data)
         val lineSnap = if (version >= VERSION_LINE_PAYLOAD) data.readBoolean() else true
+        val shapeKind: ShapeKind
+        val shapeConstrain: Boolean
+        val shapeFilled: Boolean
+        if (version >= VERSION_SHAPE_PAYLOAD) {
+            shapeKind = enumValue<ShapeKind>(data.readUTF()) ?: return SessionLoad.Failed("corrupt")
+            shapeConstrain = data.readBoolean()
+            shapeFilled = data.readBoolean()
+        } else {
+            shapeKind = ShapeKind.RECTANGLE
+            shapeConstrain = false
+            shapeFilled = false
+        }
         val objects = readObjects(data, version)
-        val undoCount = data.readInt()
+        val undoCountRaw = data.readInt()
+        val undoCount = if (version >= VERSION_SHAPE_PAYLOAD) {
+            undoCountRaw
+        } else {
+            undoCountRaw.coerceIn(0, objects.size)
+        }
         if (undoCount !in 0..objects.size) return SessionLoad.Failed("corrupt")
         val redo = readObjects(data, version)
         return SessionLoad.Ok(
@@ -102,6 +130,9 @@ object SessionCodec {
                 brush = brush,
                 eraser = eraser,
                 lineSnap = lineSnap,
+                shapeKind = shapeKind,
+                shapeConstrain = shapeConstrain,
+                shapeFilled = shapeFilled,
             ),
         )
     }
@@ -123,7 +154,12 @@ object SessionCodec {
     private fun readObjects(data: DataInputStream, version: Int): List<DrawObject> {
         val count = data.readInt()
         if (count < 0 || count > data.available()) throw EOFException()
-        return List(count) { readObject(data, version) }
+        val objects = ArrayList<DrawObject>(count)
+        repeat(count) {
+            val obj = readObject(data, version)
+            if (obj != null) objects.add(obj)
+        }
+        return objects
     }
 
     private fun writeObject(data: DataOutputStream, obj: DrawObject) {
@@ -153,12 +189,24 @@ object SessionCodec {
                 data.writeFloat(obj.widthPx)
                 data.writeUTF(obj.inputType.name)
             }
-            is DrawObject.Shape -> data.writeByte(SHAPE)
+            is DrawObject.Shape -> {
+                data.writeByte(SHAPE)
+                data.writeUTF(obj.kind.name)
+                data.writeFloat(obj.x1)
+                data.writeFloat(obj.y1)
+                data.writeFloat(obj.x2)
+                data.writeFloat(obj.y2)
+                data.writeBoolean(obj.filled)
+                data.writeInt(obj.color)
+                data.writeFloat(obj.alpha)
+                data.writeFloat(obj.widthPx)
+                data.writeUTF(obj.inputType.name)
+            }
             is DrawObject.Fill -> data.writeByte(FILL)
         }
     }
 
-    private fun readObject(data: DataInputStream, version: Int): DrawObject {
+    private fun readObject(data: DataInputStream, version: Int): DrawObject? {
         return when (data.readUnsignedByte()) {
             STROKE -> {
                 val color = data.readInt()
@@ -205,7 +253,22 @@ object SessionCodec {
                     inputType = InputType.OTHER,
                 )
             }
-            SHAPE -> DrawObject.Shape()
+            SHAPE -> if (version >= VERSION_SHAPE_PAYLOAD) {
+                DrawObject.Shape(
+                    kind = enumValue<ShapeKind>(data.readUTF()) ?: throw EOFException(),
+                    x1 = data.readFloat(),
+                    y1 = data.readFloat(),
+                    x2 = data.readFloat(),
+                    y2 = data.readFloat(),
+                    filled = data.readBoolean(),
+                    color = data.readInt(),
+                    alpha = data.readFloat(),
+                    widthPx = data.readFloat(),
+                    inputType = enumValue<InputType>(data.readUTF()) ?: throw EOFException(),
+                )
+            } else {
+                null
+            }
             FILL -> DrawObject.Fill()
             else -> throw EOFException()
         }

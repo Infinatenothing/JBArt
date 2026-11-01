@@ -14,6 +14,7 @@ import com.infinatenothing.jbart.model.BrushSettings
 import com.infinatenothing.jbart.model.DrawObject
 import com.infinatenothing.jbart.model.DrawingDocument
 import com.infinatenothing.jbart.model.HistoryManager
+import com.infinatenothing.jbart.model.ShapeKind
 import com.infinatenothing.jbart.model.Tool
 import com.infinatenothing.jbart.model.clampBrushSettings
 import com.infinatenothing.jbart.session.FileSessionStore
@@ -43,6 +44,12 @@ class DrawingViewModel(
     var eraserSettings by mutableStateOf(BrushSettings(sizeDp = BrushSettings.DEFAULT_ERASER_SIZE_DP))
         private set
     var lineSnapEnabled by mutableStateOf(true)
+        private set
+    var shapeKind by mutableStateOf(ShapeKind.RECTANGLE)
+        private set
+    var shapeConstrain by mutableStateOf(false)
+        private set
+    var shapeFilled by mutableStateOf(false)
         private set
     var revision by mutableIntStateOf(0)
         private set
@@ -90,6 +97,27 @@ class DrawingViewModel(
         scheduleSave()
     }
 
+    fun updateShapeKind(kind: ShapeKind) {
+        if (shapeKind == kind) return
+        shapeKind = kind
+        writeSettings()
+        scheduleSave()
+    }
+
+    fun updateShapeConstrain(enabled: Boolean) {
+        if (shapeConstrain == enabled) return
+        shapeConstrain = enabled
+        writeSettings()
+        scheduleSave()
+    }
+
+    fun updateShapeFilled(filled: Boolean) {
+        if (shapeFilled == filled) return
+        shapeFilled = filled
+        writeSettings()
+        scheduleSave()
+    }
+
     fun commit(obj: DrawObject) {
         synchronized(lock) {
             document.objects.add(obj)
@@ -127,7 +155,10 @@ class DrawingViewModel(
         val pending = io.submit {
             synchronized(saveLock) {
                 store.save(snapshot)
-                log("save onStop objects=${snapshot.objects.size} undo=${snapshot.undoCount} redo=${snapshot.redo.size}")
+                log(
+                    "save onStop objects=${snapshot.objects.size} undo=${snapshot.undoCount} redo=${snapshot.redo.size} " +
+                        "shape=${snapshot.shapeKind} constrain=${snapshot.shapeConstrain} filled=${snapshot.shapeFilled}",
+                )
             }
         }
         try {
@@ -162,7 +193,10 @@ class DrawingViewModel(
                     val undoCount = snap.undoCount.coerceIn(0, snap.objects.size)
                     history.replace(snap.objects.takeLast(undoCount), snap.redo)
                 }
-                log("restore objects=${snap.objects.size} undo=${history.undoCount} redo=${history.redoCount}")
+                log(
+                    "restore objects=${snap.objects.size} undo=${history.undoCount} redo=${history.redoCount} " +
+                        "shape=${snap.shapeKind} constrain=${snap.shapeConstrain} filled=${snap.shapeFilled}",
+                )
                 snap
             }
         }
@@ -173,7 +207,16 @@ class DrawingViewModel(
         brushSettings = clampBrushSettings(brushSettings)
         eraserSettings = clampBrushSettings(eraserSettings)
         lineSnapEnabled = savedState.get<Boolean>(KEY_LINE_SNAP) ?: fromFile?.lineSnap ?: true
+        shapeKind = savedShapeKind(fromFile?.shapeKind) ?: ShapeKind.RECTANGLE
+        shapeConstrain = savedState.get<Boolean>(KEY_SHAPE_CONSTRAIN) ?: fromFile?.shapeConstrain ?: false
+        shapeFilled = savedState.get<Boolean>(KEY_SHAPE_FILLED) ?: fromFile?.shapeFilled ?: false
         writeSettings()
+        log("settings tool=$tool shape=$shapeKind constrain=$shapeConstrain filled=$shapeFilled snap=$lineSnapEnabled")
+    }
+
+    private fun savedShapeKind(fallback: ShapeKind?): ShapeKind? {
+        val name = savedState.get<String>(KEY_SHAPE_KIND) ?: return fallback
+        return ShapeKind.entries.firstOrNull { it.name == name } ?: fallback
     }
 
     private fun savedEnum(key: String, fallback: Tool?): Tool? {
@@ -194,6 +237,9 @@ class DrawingViewModel(
         savedState[KEY_ERASER_SIZE] = eraserSettings.sizeDp
         savedState[KEY_ERASER_OPACITY] = eraserSettings.opacity
         savedState[KEY_LINE_SNAP] = lineSnapEnabled
+        savedState[KEY_SHAPE_KIND] = shapeKind.name
+        savedState[KEY_SHAPE_CONSTRAIN] = shapeConstrain
+        savedState[KEY_SHAPE_FILLED] = shapeFilled
     }
 
     private fun scheduleSave() {
@@ -209,7 +255,10 @@ class DrawingViewModel(
                 val snapshot = synchronized(lock) { captureLocked() }
                 try {
                     store.save(snapshot)
-                    log("save objects=${snapshot.objects.size} undo=${snapshot.undoCount} redo=${snapshot.redo.size}")
+                    log(
+                        "save objects=${snapshot.objects.size} undo=${snapshot.undoCount} redo=${snapshot.redo.size} " +
+                            "shape=${snapshot.shapeKind} constrain=${snapshot.shapeConstrain} filled=${snapshot.shapeFilled}",
+                    )
                 } catch (e: Exception) {
                     log("save failed ${e.message}")
                 }
@@ -230,6 +279,9 @@ class DrawingViewModel(
             brush = brushSettings,
             eraser = eraserSettings,
             lineSnap = lineSnapEnabled,
+            shapeKind = shapeKind,
+            shapeConstrain = shapeConstrain,
+            shapeFilled = shapeFilled,
         )
     }
 
@@ -242,6 +294,9 @@ class DrawingViewModel(
         const val KEY_ERASER_SIZE = "eraser_size"
         const val KEY_ERASER_OPACITY = "eraser_opacity"
         const val KEY_LINE_SNAP = "line_snap"
+        const val KEY_SHAPE_KIND = "shape_kind"
+        const val KEY_SHAPE_CONSTRAIN = "shape_constrain"
+        const val KEY_SHAPE_FILLED = "shape_filled"
 
         fun factory(filesDir: File): ViewModelProvider.Factory {
             return object : ViewModelProvider.Factory {

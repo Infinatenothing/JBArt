@@ -5,6 +5,7 @@ import com.infinatenothing.jbart.model.BrushSettings
 import com.infinatenothing.jbart.model.DrawObject
 import com.infinatenothing.jbart.model.HistoryManager
 import com.infinatenothing.jbart.model.InputType
+import com.infinatenothing.jbart.model.ShapeKind
 import com.infinatenothing.jbart.model.StrokePoint
 import com.infinatenothing.jbart.model.Tool
 import com.infinatenothing.jbart.session.SessionLoad
@@ -53,6 +54,39 @@ class DrawingViewModelTest {
         val restored = model(copy, store)
         assertFalse(restored.lineSnapEnabled)
         assertEquals(listOf(line()), restored.document.objects.toList())
+    }
+
+    @Test
+    fun shapeSettingsSurviveSavedStateAndSessionReload() {
+        val store = MemorySessionStore()
+        val handle = SavedStateHandle()
+        val model = model(handle, store)
+        assertEquals(ShapeKind.RECTANGLE, model.shapeKind)
+        assertFalse(model.shapeConstrain)
+        assertFalse(model.shapeFilled)
+        model.updateShapeKind(ShapeKind.ELLIPSE)
+        model.updateShapeConstrain(true)
+        model.updateShapeFilled(true)
+        model.onHostStop()
+
+        val fromHandle = model(
+            SavedStateHandle(
+                mapOf(
+                    DrawingViewModel.KEY_SHAPE_KIND to handle.get<String>(DrawingViewModel.KEY_SHAPE_KIND),
+                    DrawingViewModel.KEY_SHAPE_CONSTRAIN to handle.get<Boolean>(DrawingViewModel.KEY_SHAPE_CONSTRAIN),
+                    DrawingViewModel.KEY_SHAPE_FILLED to handle.get<Boolean>(DrawingViewModel.KEY_SHAPE_FILLED),
+                ),
+            ),
+            MemorySessionStore(),
+        )
+        assertEquals(ShapeKind.ELLIPSE, fromHandle.shapeKind)
+        assertTrue(fromHandle.shapeConstrain)
+        assertTrue(fromHandle.shapeFilled)
+
+        val fromSession = model(SavedStateHandle(), store)
+        assertEquals(ShapeKind.ELLIPSE, fromSession.shapeKind)
+        assertTrue(fromSession.shapeConstrain)
+        assertTrue(fromSession.shapeFilled)
     }
 
     @Test
