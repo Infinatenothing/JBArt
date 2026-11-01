@@ -3,6 +3,7 @@
     <string name="tool_brush">Brush</string>
     <string name="tool_eraser">Eraser</string>
     <string name="tool_line">Line</string>
+    <string name="snap_angle">Snap angle</string>
     <string name="tool_shape">Shape</string>
     <string name="tool_fill">Fill</string>
     <string name="action_color">Color</string>

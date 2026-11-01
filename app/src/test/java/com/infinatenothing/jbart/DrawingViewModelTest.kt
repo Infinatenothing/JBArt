@@ -39,6 +39,23 @@ class DrawingViewModelTest {
     }
 
     @Test
+    fun lineSnapDefaultsOnAndSurvivesSavedState() {
+        val store = MemorySessionStore()
+        val handle = SavedStateHandle()
+        val model = model(handle, store)
+        assertTrue(model.lineSnapEnabled)
+        model.setLineSnap(false)
+        model.commit(line())
+        model.onHostStop()
+        val copy = SavedStateHandle(
+            mapOf(DrawingViewModel.KEY_LINE_SNAP to handle.get<Boolean>(DrawingViewModel.KEY_LINE_SNAP)),
+        )
+        val restored = model(copy, store)
+        assertFalse(restored.lineSnapEnabled)
+        assertEquals(listOf(line()), restored.document.objects.toList())
+    }
+
+    @Test
     fun smallStateSurvivesFreshSavedStateHandle() {
         val store = MemorySessionStore()
         val handle = SavedStateHandle()
@@ -84,6 +101,17 @@ class DrawingViewModelTest {
             history = history,
         )
     }
+
+    private fun line() = DrawObject.Line(
+        x1 = 0f,
+        y1 = 0f,
+        x2 = 12f,
+        y2 = 0f,
+        color = 0xFF000000.toInt(),
+        alpha = 0.4f,
+        widthPx = 8f,
+        inputType = InputType.FINGER,
+    )
 
     private fun stroke(x: Float) = DrawObject.Stroke(
         points = listOf(StrokePoint(x, 0f, 1f, 0L)),

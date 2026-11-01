@@ -27,7 +27,8 @@ object InputRouting {
         return when (selectedTool) {
             Tool.BRUSH -> Tool.BRUSH
             Tool.ERASER -> Tool.ERASER
-            Tool.LINE, Tool.SHAPE, Tool.FILL -> null
+            Tool.LINE -> Tool.LINE
+            Tool.SHAPE, Tool.FILL -> null
         }
     }
 

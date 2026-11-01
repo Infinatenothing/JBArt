@@ -69,6 +69,7 @@ fun DrawingScreen(model: DrawingViewModel) {
                 view.tool = selectedTool
                 view.brushSettings = brushSettings
                 view.eraserSettings = eraserSettings
+                view.lineSnapEnabled = model.lineSnapEnabled
                 view.onCommit = { model.commit(it) }
                 view.sync(model.document, revision)
             },
@@ -83,6 +84,8 @@ fun DrawingScreen(model: DrawingViewModel) {
             canRedo = canRedo,
             brushSettings = brushSettings,
             eraserSettings = eraserSettings,
+            lineSnapEnabled = model.lineSnapEnabled,
+            onLineSnap = { model.setLineSnap(it) },
             settingsTool = settingsTool,
             onSelectTool = { tool ->
                 model.selectTool(tool)

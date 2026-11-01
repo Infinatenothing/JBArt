@@ -21,15 +21,59 @@ class SessionCodecTest {
             width = 800,
             height = 600,
             backgroundColor = 0xFFFFFFFF.toInt(),
-            objects = listOf(stroke(1f), erase(2f), stroke(3f)),
-            undoCount = 2,
+            objects = listOf(stroke(1f), erase(2f), line(), stroke(3f)),
+            undoCount = 3,
             redo = listOf(erase(9f)),
-            tool = Tool.ERASER,
+            tool = Tool.LINE,
             brush = BrushSettings(sizeDp = 12f, opacity = 0.4f),
             eraser = BrushSettings(sizeDp = 20f, opacity = 1f),
+            lineSnap = false,
         )
         val decoded = SessionCodec.decode(SessionCodec.encode(snapshot))
         assertEquals(SessionLoad.Ok(snapshot), decoded)
+    }
+
+    @Test
+    fun version1SessionWithoutLinePayloadStillLoads() {
+        val bytes = ByteArrayOutputStream().also { out ->
+            DataOutputStream(out).use { data ->
+                data.writeInt(SessionCodec.MAGIC)
+                data.writeInt(1)
+                data.writeInt(10)
+                data.writeInt(20)
+                data.writeInt(0xFFFFFFFF.toInt())
+                data.writeUTF("BRUSH")
+                data.writeFloat(4f)
+                data.writeFloat(1f)
+                data.writeFloat(16f)
+                data.writeFloat(1f)
+                data.writeInt(2)
+                data.writeByte(1)
+                data.writeInt(0xFF000000.toInt())
+                data.writeFloat(4f)
+                data.writeFloat(0.8f)
+                data.writeUTF("FINGER")
+                data.writeInt(1)
+                data.writeFloat(1f)
+                data.writeFloat(2f)
+                data.writeFloat(0.5f)
+                data.writeLong(3L)
+                data.writeByte(3)
+                data.writeInt(1)
+                data.writeInt(0)
+            }
+        }.toByteArray()
+        val decoded = SessionCodec.decode(bytes)
+        assertTrue(decoded is SessionLoad.Ok)
+        val snapshot = (decoded as SessionLoad.Ok).snapshot
+        val stroke = snapshot.objects[0] as DrawObject.Stroke
+        assertEquals(1f, stroke.points.single().x, 0f)
+        assertEquals(0.8f, stroke.alpha, 0f)
+        val legacy = snapshot.objects[1] as DrawObject.Line
+        assertEquals(0f, legacy.x1, 0f)
+        assertEquals(0f, legacy.x2, 0f)
+        assertTrue(snapshot.lineSnap)
+        assertEquals(1, snapshot.undoCount)
     }
 
     @Test
@@ -63,6 +107,17 @@ class SessionCodecTest {
         baseWidthPx = 4f,
         inputType = InputType.STYLUS,
         alpha = 0.8f,
+    )
+
+    private fun line() = DrawObject.Line(
+        x1 = 1f,
+        y1 = 2f,
+        x2 = 30f,
+        y2 = 40f,
+        color = 0xFF000000.toInt(),
+        alpha = 0.3f,
+        widthPx = 6f,
+        inputType = InputType.STYLUS,
     )
 
     private fun erase(x: Float) = DrawObject.EraseStroke(

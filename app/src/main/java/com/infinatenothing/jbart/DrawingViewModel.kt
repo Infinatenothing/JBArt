@@ -42,6 +42,8 @@ class DrawingViewModel(
         private set
     var eraserSettings by mutableStateOf(BrushSettings(sizeDp = BrushSettings.DEFAULT_ERASER_SIZE_DP))
         private set
+    var lineSnapEnabled by mutableStateOf(true)
+        private set
     var revision by mutableIntStateOf(0)
         private set
 
@@ -77,6 +79,13 @@ class DrawingViewModel(
 
     fun updateEraser(settings: BrushSettings) {
         eraserSettings = clampBrushSettings(settings)
+        writeSettings()
+        scheduleSave()
+    }
+
+    fun setLineSnap(enabled: Boolean) {
+        if (lineSnapEnabled == enabled) return
+        lineSnapEnabled = enabled
         writeSettings()
         scheduleSave()
     }
@@ -163,6 +172,7 @@ class DrawingViewModel(
             ?: BrushSettings(sizeDp = BrushSettings.DEFAULT_ERASER_SIZE_DP)
         brushSettings = clampBrushSettings(brushSettings)
         eraserSettings = clampBrushSettings(eraserSettings)
+        lineSnapEnabled = savedState.get<Boolean>(KEY_LINE_SNAP) ?: fromFile?.lineSnap ?: true
         writeSettings()
     }
 
@@ -183,6 +193,7 @@ class DrawingViewModel(
         savedState[KEY_BRUSH_OPACITY] = brushSettings.opacity
         savedState[KEY_ERASER_SIZE] = eraserSettings.sizeDp
         savedState[KEY_ERASER_OPACITY] = eraserSettings.opacity
+        savedState[KEY_LINE_SNAP] = lineSnapEnabled
     }
 
     private fun scheduleSave() {
@@ -218,6 +229,7 @@ class DrawingViewModel(
             tool = tool,
             brush = brushSettings,
             eraser = eraserSettings,
+            lineSnap = lineSnapEnabled,
         )
     }
 
@@ -229,6 +241,7 @@ class DrawingViewModel(
         const val KEY_BRUSH_OPACITY = "brush_opacity"
         const val KEY_ERASER_SIZE = "eraser_size"
         const val KEY_ERASER_OPACITY = "eraser_opacity"
+        const val KEY_LINE_SNAP = "line_snap"
 
         fun factory(filesDir: File): ViewModelProvider.Factory {
             return object : ViewModelProvider.Factory {

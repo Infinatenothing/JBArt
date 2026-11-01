@@ -1,6 +1,8 @@
 package com.infinatenothing.jbart
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -29,6 +31,20 @@ class DrawingScreenTest {
         rule.onNodeWithTag("brush_settings").assertIsDisplayed()
         rule.onNodeWithTag("brush_size_slider").assertIsDisplayed()
         rule.onNodeWithTag("brush_opacity_slider").assertIsDisplayed()
+    }
+
+    @Test
+    fun lineSnapToggleShowsOnlyForLineAndToggles() {
+        assertTrue(rule.onAllNodesWithTag("line_snap_toggle").fetchSemanticsNodes().isEmpty())
+        rule.onNodeWithTag("tool_line").performClick()
+        rule.onNodeWithTag("line_snap_toggle").assertIsDisplayed().assertIsOn()
+        rule.onNodeWithContentDescription("Snap angle").assertIsDisplayed()
+        rule.onNodeWithTag("line_snap_toggle").performClick()
+        rule.onNodeWithTag("line_snap_toggle").assertIsOff()
+        rule.onNodeWithTag("line_snap_toggle").performClick()
+        rule.onNodeWithTag("line_snap_toggle").assertIsOn()
+        rule.onNodeWithTag("tool_brush").performClick()
+        assertTrue(rule.onAllNodesWithTag("line_snap_toggle").fetchSemanticsNodes().isEmpty())
     }
 
     @Test

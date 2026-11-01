@@ -19,7 +19,21 @@ sealed interface DrawObject {
         override val tool: Tool = Tool.ERASER,
     ) : DrawObject
 
-    data class Line(override val tool: Tool = Tool.LINE) : DrawObject
+    /**
+     * Straight segment. [widthPx] is constant (no pressure). Caps are always round.
+     * Endpoints are the committed ones, already snapped when snap was on.
+     */
+    data class Line(
+        val x1: Float,
+        val y1: Float,
+        val x2: Float,
+        val y2: Float,
+        val color: Int,
+        val alpha: Float,
+        val widthPx: Float,
+        val inputType: InputType,
+        override val tool: Tool = Tool.LINE,
+    ) : DrawObject
 
     data class Shape(override val tool: Tool = Tool.SHAPE) : DrawObject
 
