@@ -38,6 +38,8 @@ sealed interface DrawObject {
     /**
      * Axis-aligned shape, or an arrow along the drag.
      * [x1], [y1] is the drag start. [x2], [y2] is the committed end, already constrained.
+     * The two points stay an unrotated box. [rotationDeg] is clockwise about that box's center,
+     * in screen coordinates. Zero matches a shape drawn before pending edit.
      * [widthPx] is constant (no pressure). Closed shapes are either filled or stroked, not both.
      */
     data class Shape(
@@ -51,6 +53,7 @@ sealed interface DrawObject {
         val alpha: Float,
         val widthPx: Float,
         val inputType: InputType,
+        val rotationDeg: Float = 0f,
         override val tool: Tool = Tool.SHAPE,
     ) : DrawObject
 

@@ -26,6 +26,7 @@ data class SessionSnapshot(
     val shapeKind: ShapeKind = ShapeKind.RECTANGLE,
     val shapeConstrain: Boolean = false,
     val shapeFilled: Boolean = false,
+    val pending: DrawObject? = null,
 )
 
 sealed interface SessionLoad {
@@ -39,15 +40,23 @@ sealed interface SessionLoad {
  * Version 1: magic, version, size, background, tool, brush, eraser, objects, undoCount, redo.
  * Version 2 adds the line-snap flag after the eraser and a full [DrawObject.Line] payload.
  * Version 3 adds shape kind, constrain, and filled after line-snap, and a full [DrawObject.Shape] payload.
+ * Version 4 adds [DrawObject.Shape.rotationDeg] after the version 3 shape payload. Line objects keep
+ * the version 3 payload. After the redo list, version 4 writes a pending flag and, when set, one
+ * object ([DrawObject.Shape] or [DrawObject.Line]). That object is not part of [SessionSnapshot.objects]
+ * or the undo count. A pending tag other than shape or line drops only the pending object.
  * A version 1 or 2 shape tag has no payload and is dropped. [SessionSnapshot.undoCount] is then
- * clamped to the remaining object count. Version 1 and 2 files still load.
+ * clamped to the remaining object count. Version 1, 2, and 3 files still load, with no pending object
+ * and shape rotation of 0.
  * Strokes keep canvas pixels. The file is an autosave, not a user document.
  */
 object SessionCodec {
     const val MAGIC = 0x4A425331
-    const val VERSION = 3
+    const val VERSION = 4
     private const val VERSION_LINE_PAYLOAD = 2
     private const val VERSION_SHAPE_PAYLOAD = 3
+    private const val VERSION_SHAPE_ROTATION = 4
+
+    var log: (String) -> Unit = {}
 
     private const val STROKE = 1
     private const val ERASE = 2
@@ -74,6 +83,9 @@ object SessionCodec {
             writeObjects(data, snapshot.objects)
             data.writeInt(snapshot.undoCount)
             writeObjects(data, snapshot.redo)
+            val pending = snapshot.pending
+            data.writeBoolean(pending != null)
+            if (pending != null) writeObject(data, pending)
         }
         return out.toByteArray()
     }
@@ -118,6 +130,7 @@ object SessionCodec {
         }
         if (undoCount !in 0..objects.size) return SessionLoad.Failed("corrupt")
         val redo = readObjects(data, version)
+        val pending = if (version >= VERSION_SHAPE_ROTATION) readPending(data, version) else null
         return SessionLoad.Ok(
             SessionSnapshot(
                 width = width,
@@ -133,6 +146,7 @@ object SessionCodec {
                 shapeKind = shapeKind,
                 shapeConstrain = shapeConstrain,
                 shapeFilled = shapeFilled,
+                pending = pending,
             ),
         )
     }
@@ -201,13 +215,28 @@ object SessionCodec {
                 data.writeFloat(obj.alpha)
                 data.writeFloat(obj.widthPx)
                 data.writeUTF(obj.inputType.name)
+                data.writeFloat(obj.rotationDeg)
             }
             is DrawObject.Fill -> data.writeByte(FILL)
         }
     }
 
+    private fun readPending(data: DataInputStream, version: Int): DrawObject? {
+        if (!data.readBoolean()) return null
+        val tag = data.readUnsignedByte()
+        if (tag != SHAPE && tag != LINE) {
+            log("pending dropped tag=$tag")
+            return null
+        }
+        return readTagged(tag, data, version)
+    }
+
     private fun readObject(data: DataInputStream, version: Int): DrawObject? {
-        return when (data.readUnsignedByte()) {
+        return readTagged(data.readUnsignedByte(), data, version)
+    }
+
+    private fun readTagged(tag: Int, data: DataInputStream, version: Int): DrawObject? {
+        return when (tag) {
             STROKE -> {
                 val color = data.readInt()
                 val width = data.readFloat()
@@ -265,6 +294,7 @@ object SessionCodec {
                     alpha = data.readFloat(),
                     widthPx = data.readFloat(),
                     inputType = enumValue<InputType>(data.readUTF()) ?: throw EOFException(),
+                    rotationDeg = if (version >= VERSION_SHAPE_ROTATION) data.readFloat() else 0f,
                 )
             } else {
                 null

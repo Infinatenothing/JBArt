@@ -29,6 +29,7 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
@@ -51,20 +52,23 @@ fun DrawingScreen(model: DrawingViewModel) {
     }
     var settingsTool by remember { mutableStateOf<Tool?>(null) }
     val revision = model.revision
-    val canUndo = model.history.canUndo
-    val canRedo = model.history.canRedo
+    val pending = model.pending
+    val canUndo = pending != null || model.history.canUndo
+    val canRedo = pending == null && model.history.canRedo
     val selectedTool = model.tool
     val brushSettings = model.brushSettings
     val eraserSettings = model.eraserSettings
 
+    val canvasView = remember { arrayOfNulls<DrawingView>(1) }
     val canvas = @Composable { modifier: Modifier ->
         AndroidView(
             modifier = modifier
+                .testTag("canvas")
                 .clipToBounds()
                 .onGloballyPositioned { coords ->
                     Log.d("JBArtLayout", "canvas bounds=${coords.boundsInWindow()}")
                 },
-            factory = { context -> DrawingView(context) },
+            factory = { context -> DrawingView(context).also { canvasView[0] = it } },
             update = { view ->
                 view.tool = selectedTool
                 view.brushSettings = brushSettings
@@ -74,6 +78,10 @@ fun DrawingScreen(model: DrawingViewModel) {
                 view.shapeConstrain = model.shapeConstrain
                 view.shapeFilled = model.shapeFilled
                 view.onCommit = { model.commit(it) }
+                view.onStagePending = { model.stagePending(it) }
+                view.onUpdatePending = { model.updatePending(it) }
+                view.onCommitPending = { model.commitPending() }
+                view.bindPending(pending)
                 view.sync(model.document, revision)
             },
         )
@@ -97,10 +105,13 @@ fun DrawingScreen(model: DrawingViewModel) {
             onShapeFilled = { model.updateShapeFilled(it) },
             settingsTool = settingsTool,
             onSelectTool = { tool ->
+                canvasView[0]?.flushPendingEdit()
                 model.selectTool(tool)
                 settingsTool = null
             },
             onOpenSettings = { tool ->
+                canvasView[0]?.flushPendingEdit()
+                model.commitPending()
                 model.selectTool(tool)
                 settingsTool = tool
             },
@@ -108,7 +119,10 @@ fun DrawingScreen(model: DrawingViewModel) {
             onBrushSettings = { model.updateBrush(it) },
             onEraserSettings = { model.updateEraser(it) },
             onUndo = { model.undo() },
-            onRedo = { model.redo() },
+            onRedo = {
+                canvasView[0]?.flushPendingEdit()
+                model.redo()
+            },
             modifier = modifier,
         )
     }
