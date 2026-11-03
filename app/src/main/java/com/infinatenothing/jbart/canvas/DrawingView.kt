@@ -33,8 +33,9 @@ import kotlin.math.roundToInt
  * so a stroke does not darken where it crosses itself. A shape is drawn the same way:
  * opaque on the scratch bitmap, then blitted once with the brush alpha.
  * Erases punch that ink with CLEAR.
- * A shape that just finished drawing stays pending on the scratch layer, with handles
+ * A shape or line that just finished drawing stays pending on the scratch layer, with handles
  * drawn above it. Those handles are never copied onto the ink bitmap.
+ * A pending line has two endpoint handles and no box.
  */
 class DrawingView(context: Context) : View(context) {
     var document: DrawingDocument? = null
@@ -143,12 +144,17 @@ class DrawingView(context: Context) : View(context) {
         color = Color.BLACK
     }
     private var pendingShape: DrawObject.Shape? = null
+    private var pendingLine: DrawObject.Line? = null
     private var pendingDrag = false
     private var dragHandle: Handle? = null
     private var dragOrigin: DrawObject.Shape? = null
+    private var lineHandle: LineHandle? = null
+    private var lineDragOrigin: DrawObject.Line? = null
+    private var endpointSnap = false
     private var dragStartX = 0f
     private var dragStartY = 0f
     private val handleOut = FloatArray(18)
+    private val lineOut = FloatArray(4)
 
     init {
         setWillNotDraw(false)
@@ -190,9 +196,15 @@ class DrawingView(context: Context) : View(context) {
         }
         if (pendingDrag) {
             pendingDrag = false
-            pendingShape = dragOrigin ?: pendingShape
-            dragOrigin = null
-            dragHandle = null
+            if (lineDragOrigin != null) {
+                pendingLine = lineDragOrigin
+                lineDragOrigin = null
+                lineHandle = null
+            } else {
+                pendingShape = dragOrigin ?: pendingShape
+                dragOrigin = null
+                dragHandle = null
+            }
             stylusActive = false
             activePointerId = MotionEvent.INVALID_POINTER_ID
         }
@@ -208,15 +220,19 @@ class DrawingView(context: Context) : View(context) {
             canvas.drawBitmap(bitmap, 0f, 0f, null)
         }
         val pending = pendingShape
-        if (pending != null || (drawing && activeDrawTool != Tool.ERASER)) {
+        val line = pendingLine
+        if (pending != null || line != null || (drawing && activeDrawTool != Tool.ERASER)) {
             scratch?.let { bitmap ->
                 bitmap.prepareToDraw()
                 blitPaint.xfermode = null
-                val alpha = if (drawing) strokeAlpha else pending?.alpha ?: strokeAlpha
+                val alpha = if (drawing) strokeAlpha else pending?.alpha ?: line?.alpha ?: strokeAlpha
                 blitPaint.alpha = alphaByte(alpha)
                 canvas.drawBitmap(bitmap, 0f, 0f, blitPaint)
             }
-            if (pending != null && !drawing) drawHandles(canvas, pending)
+            if (!drawing) {
+                if (pending != null) drawHandles(canvas, pending)
+                else if (line != null) drawLineHandles(canvas, line)
+            }
             if (drawing && activeDrawTool == Tool.LINE && labelBuilder.isNotEmpty()) {
                 val offset = labelPaint.textSize
                 canvas.drawText(
@@ -247,18 +263,22 @@ class DrawingView(context: Context) : View(context) {
         }
         clearScratch()
         paintPendingShape()
+        paintPendingLine()
         ink?.prepareToDraw()
         invalidate()
     }
 
-    /** Shows the model pending shape. A null value discards the local edit. */
+    /** Shows the model pending shape or line. A null value discards the local edit. */
     fun bindPending(obj: DrawObject?) {
         if (obj == null) {
-            val had = pendingShape != null || pendingDrag
+            val had = pendingShape != null || pendingLine != null || pendingDrag
             pendingDrag = false
             dragOrigin = null
             dragHandle = null
+            lineDragOrigin = null
+            lineHandle = null
             pendingShape = null
+            pendingLine = null
             if (had) {
                 stylusActive = false
                 if (!drawing) {
@@ -269,17 +289,39 @@ class DrawingView(context: Context) : View(context) {
             }
             return
         }
-        val shape = obj as? DrawObject.Shape ?: return
         if (pendingDrag || drawing) return
-        if (pendingShape == shape) return
-        pendingShape = shape
-        paintPendingShape()
-        invalidate()
+        when (obj) {
+            is DrawObject.Shape -> {
+                pendingLine = null
+                if (pendingShape == obj) return
+                pendingShape = obj
+                paintPendingShape()
+                invalidate()
+            }
+            is DrawObject.Line -> {
+                pendingShape = null
+                if (pendingLine == obj) return
+                pendingLine = obj
+                paintPendingLine()
+                invalidate()
+            }
+            else -> Unit
+        }
     }
 
     /** Writes an in-progress drag into the pending object before a commit. */
     fun flushPendingEdit() {
         if (!pendingDrag) return
+        if (lineDragOrigin != null) {
+            val line = pendingLine
+            pendingDrag = false
+            lineDragOrigin = null
+            lineHandle = null
+            stylusActive = false
+            activePointerId = MotionEvent.INVALID_POINTER_ID
+            if (line != null) onUpdatePending(line)
+            return
+        }
         val shape = pendingShape
         pendingDrag = false
         dragOrigin = null
@@ -336,6 +378,29 @@ class DrawingView(context: Context) : View(context) {
         if (routed == null) return
         if (pendingShape != null && (routed == Tool.ERASER || tool != Tool.SHAPE)) {
             Log.d(TAG, "pending commit routed=$routed")
+            commitPendingOnly()
+            return
+        }
+        if (pendingLine != null && (routed == Tool.ERASER || tool != Tool.LINE)) {
+            Log.d(TAG, "pending line commit routed=$routed")
+            commitPendingOnly()
+            return
+        }
+        if (routed == Tool.LINE && pendingLine != null) {
+            val x = event.getX(0)
+            val y = event.getY(0)
+            val line = pendingLine ?: return
+            val handle = LineTransform.hitLineHandle(line, x, y, handleTouchPx())
+            if (handle != null) {
+                beginLineDrag(handle, x, y, event, 0)
+                return
+            }
+            val slop = max(line.widthPx / 2f, dp(LineTransform.BODY_SLOP_DP))
+            if (LineTransform.nearLine(line, x, y, slop)) {
+                beginLineDrag(null, x, y, event, 0)
+                return
+            }
+            Log.d(TAG, "pending line commit tap")
             commitPendingOnly()
             return
         }
@@ -494,22 +559,21 @@ class DrawingView(context: Context) : View(context) {
             invalidateSegment(x1, y1, x2, y2, width)
             return
         }
-        stampLine(x1, y1, x2, y2, Color.BLACK, width, alpha)
-        onCommit(
-            DrawObject.Line(
-                x1 = x1,
-                y1 = y1,
-                x2 = x2,
-                y2 = y2,
-                color = Color.BLACK,
-                alpha = alpha,
-                widthPx = width,
-                inputType = type,
-            ),
+        val line = DrawObject.Line(
+            x1 = x1,
+            y1 = y1,
+            x2 = x2,
+            y2 = y2,
+            color = Color.BLACK,
+            alpha = alpha,
+            widthPx = width,
+            inputType = type,
         )
-        ink?.prepareToDraw()
+        pendingLine = line
+        paintPendingLine()
+        onStagePending(line)
         invalidate()
-        Log.d(TAG, "line commit start=$x1,$y1 end=$x2,$y2 length=$length snap=$lineSnapEnabled")
+        Log.d(TAG, "pending line start start=$x1,$y1 end=$x2,$y2 length=$length snap=$lineSnapEnabled")
     }
 
     private fun commitStroke(event: MotionEvent) {
@@ -908,6 +972,47 @@ class DrawingView(context: Context) : View(context) {
         drawShapeRotated(canvas, shape)
     }
 
+    private fun paintPendingLine() {
+        val line = pendingLine ?: return
+        val canvas = scratchCanvas ?: return
+        clearScratch()
+        geometryXfer = null
+        drawLineOn(canvas, line.x1, line.y1, line.x2, line.y2, line.color, line.widthPx)
+    }
+
+    private fun beginLineDrag(handle: LineHandle?, x: Float, y: Float, event: MotionEvent, index: Int) {
+        val line = pendingLine ?: return
+        activePointerId = event.getPointerId(index)
+        val toolType = event.getToolType(index)
+        inputType = inputTypeOf(toolType)
+        stylusActive = toolType == MotionEvent.TOOL_TYPE_STYLUS || toolType == MotionEvent.TOOL_TYPE_ERASER
+        pendingDrag = true
+        dragOrigin = null
+        dragHandle = null
+        lineHandle = handle
+        lineDragOrigin = line
+        endpointSnap = lineSnapEnabled
+        dragStartX = x
+        dragStartY = y
+        Log.d(TAG, "pending line pointer handle=${handle ?: "move"}")
+    }
+
+    private fun updateLineDrag(x: Float, y: Float) {
+        val origin = lineDragOrigin ?: return
+        val previous = pendingLine
+        val handle = lineHandle
+        val next = if (handle == null) {
+            LineTransform.movedLine(origin, x - dragStartX, y - dragStartY)
+        } else {
+            LineTransform.draggedEndpoint(origin, handle, x, y, endpointSnap, minLinePx(), lineOut)
+            origin.copy(x1 = lineOut[0], y1 = lineOut[1], x2 = lineOut[2], y2 = lineOut[3])
+        }
+        pendingLine = next
+        paintPendingLine()
+        if (previous != null) invalidateLine(previous)
+        invalidateLine(next)
+    }
+
     private fun beginPendingDrag(handle: Handle?, x: Float, y: Float, event: MotionEvent, index: Int) {
         val shape = pendingShape ?: return
         activePointerId = event.getPointerId(index)
@@ -915,6 +1020,8 @@ class DrawingView(context: Context) : View(context) {
         inputType = inputTypeOf(toolType)
         stylusActive = toolType == MotionEvent.TOOL_TYPE_STYLUS || toolType == MotionEvent.TOOL_TYPE_ERASER
         pendingDrag = true
+        lineDragOrigin = null
+        lineHandle = null
         dragHandle = handle
         dragOrigin = shape
         dragStartX = x
@@ -923,6 +1030,10 @@ class DrawingView(context: Context) : View(context) {
     }
 
     private fun updatePendingDrag(x: Float, y: Float) {
+        if (lineDragOrigin != null) {
+            updateLineDrag(x, y)
+            return
+        }
         val origin = dragOrigin ?: return
         val previous = pendingShape
         val handle = dragHandle
@@ -943,6 +1054,20 @@ class DrawingView(context: Context) : View(context) {
         if (index >= 0 && !ignoredPointer(event, index)) {
             updatePendingDrag(event.getX(index), event.getY(index))
         }
+        if (lineDragOrigin != null) {
+            val line = pendingLine
+            pendingDrag = false
+            lineDragOrigin = null
+            lineHandle = null
+            stylusActive = false
+            activePointerId = MotionEvent.INVALID_POINTER_ID
+            if (line != null) {
+                paintPendingLine()
+                onUpdatePending(line)
+                Log.d(TAG, "pending line edit start=${line.x1},${line.y1} end=${line.x2},${line.y2}")
+            }
+            return
+        }
         val shape = pendingShape
         pendingDrag = false
         dragOrigin = null
@@ -960,6 +1085,15 @@ class DrawingView(context: Context) : View(context) {
         pendingDrag = false
         stylusActive = false
         activePointerId = MotionEvent.INVALID_POINTER_ID
+        if (lineDragOrigin != null) {
+            pendingLine = lineDragOrigin
+            lineDragOrigin = null
+            lineHandle = null
+            paintPendingLine()
+            invalidate()
+            Log.d(TAG, "pending line cancel drag")
+            return
+        }
         pendingShape = dragOrigin ?: pendingShape
         dragOrigin = null
         dragHandle = null
@@ -970,14 +1104,25 @@ class DrawingView(context: Context) : View(context) {
 
     private fun commitPendingOnly() {
         flushPendingEdit()
-        val shape = pendingShape ?: return
-        pendingShape = null
+        val shape = pendingShape
+        if (shape != null) {
+            pendingShape = null
+            clearScratch()
+            stampShape(shape)
+            onCommitPending()
+            ink?.prepareToDraw()
+            invalidate()
+            Log.d(TAG, "pending commit kind=${shape.kind} rotation=${shape.rotationDeg}")
+            return
+        }
+        val line = pendingLine ?: return
+        pendingLine = null
         clearScratch()
-        stampShape(shape)
+        stampLine(line.x1, line.y1, line.x2, line.y2, line.color, line.widthPx, line.alpha)
         onCommitPending()
         ink?.prepareToDraw()
         invalidate()
-        Log.d(TAG, "pending commit kind=${shape.kind} rotation=${shape.rotationDeg}")
+        Log.d(TAG, "pending line commit start=${line.x1},${line.y1} end=${line.x2},${line.y2}")
     }
 
     private fun drawHandles(canvas: Canvas, shape: DrawObject.Shape) {
@@ -1019,6 +1164,29 @@ class DrawingView(context: Context) : View(context) {
         )
         invalidateBounds(shapeBounds)
     }
+
+    private fun drawLineHandles(canvas: Canvas, line: DrawObject.Line) {
+        val radius = dp(6f)
+        handleLinePaint.strokeWidth = dp(1.5f)
+        canvas.drawCircle(line.x1, line.y1, radius, handleFillPaint)
+        canvas.drawCircle(line.x1, line.y1, radius, handleLinePaint)
+        canvas.drawCircle(line.x2, line.y2, radius, handleFillPaint)
+        canvas.drawCircle(line.x2, line.y2, radius, handleLinePaint)
+    }
+
+    private fun invalidateLine(line: DrawObject.Line) {
+        invalidateHull(
+            line.x1,
+            line.y1,
+            line.x2,
+            line.y2,
+            line.x2,
+            line.y2,
+            max(line.widthPx, dp(16f)),
+        )
+    }
+
+    private fun minLinePx(): Float = dp(MIN_LINE_DP)
 
     private fun rotateOffsetPx(): Float = dp(ShapeTransform.ROTATE_OFFSET_DP)
 

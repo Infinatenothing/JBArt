@@ -341,7 +341,7 @@ class DrawingViewModel(
     private fun describe(obj: DrawObject): String {
         return when (obj) {
             is DrawObject.Shape -> "kind=${obj.kind} rotation=${obj.rotationDeg} box=${obj.x1},${obj.y1},${obj.x2},${obj.y2}"
-            is DrawObject.Line -> "line"
+            is DrawObject.Line -> "line ${obj.x1},${obj.y1},${obj.x2},${obj.y2}"
             else -> obj.tool.name
         }
     }
