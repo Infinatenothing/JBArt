@@ -11,8 +11,10 @@ import com.infinatenothing.jbart.model.Tool
 import com.infinatenothing.jbart.session.SessionLoad
 import com.infinatenothing.jbart.session.SessionSnapshot
 import com.infinatenothing.jbart.session.SessionStore
+import com.infinatenothing.jbart.session.SessionCodec
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.AbstractExecutorService
@@ -121,6 +123,94 @@ class DrawingViewModelTest {
         assertTrue(restored.document.objects.isEmpty())
     }
 
+    @Test
+    fun pendingShapeIsOutsideHistoryUntilCommit() {
+        val model = model(history = HistoryManager(maxEntries = 2))
+        val kept = stroke(1f)
+        model.commit(kept)
+        model.stagePending(shape(0f))
+        model.updatePending(shape(4f))
+        assertEquals(listOf(kept), model.document.objects.toList())
+        assertEquals(1, model.history.undoCount)
+        assertFalse(model.history.canRedo)
+        assertEquals(shape(4f), model.pending)
+        model.updateShapeConstrain(true)
+        assertEquals(shape(4f), model.pending)
+        model.updateShapeFilled(true)
+        assertEquals(true, (model.pending as DrawObject.Shape).filled)
+
+        model.commitPending()
+        assertNull(model.pending)
+        assertEquals(2, model.document.objects.size)
+        model.stagePending(shape(2f))
+        model.commitPending()
+        model.stagePending(shape(3f))
+        model.commitPending()
+        assertEquals(4, model.document.objects.size)
+        assertEquals(2, model.history.undoCount)
+    }
+
+    @Test
+    fun undoWhilePendingDiscardsItAndLeavesHistory() {
+        val model = model()
+        val kept = stroke(2f)
+        model.commit(kept)
+        model.undo()
+        assertEquals(1, model.history.redoCount)
+        model.stagePending(shape(1f))
+        val undo = model.history.undoCount
+        val redo = model.history.redoCount
+        model.undo()
+        assertNull(model.pending)
+        assertEquals(undo, model.history.undoCount)
+        assertEquals(redo, model.history.redoCount)
+        assertTrue(model.document.objects.isEmpty())
+    }
+
+    @Test
+    fun redoAndToolSwitchCommitPendingAndStartNothingElse() {
+        val model = model()
+        val kept = stroke(3f)
+        model.commit(kept)
+        model.undo()
+        model.stagePending(shape(6f))
+        model.redo()
+        assertNull(model.pending)
+        assertEquals(listOf(shape(6f)), model.document.objects.toList())
+        assertFalse(model.history.canRedo)
+        assertEquals(1, model.history.undoCount)
+
+        model.stagePending(shape(7f))
+        model.selectTool(Tool.LINE)
+        assertEquals(Tool.LINE, model.tool)
+        assertNull(model.pending)
+        assertEquals(listOf(shape(6f), shape(7f)), model.document.objects.toList())
+        model.undo()
+        model.redo()
+        assertEquals(shape(7f), model.document.objects.last())
+    }
+
+    @Test
+    fun encodedPendingShapeRestoresAsPendingThenCommits() {
+        val store = CodecSessionStore()
+        val model = model(store = store)
+        val pending = shape(9f).copy(rotationDeg = 40f)
+        model.commit(stroke(1f))
+        model.stagePending(pending)
+        model.onHostStop()
+        val restored = model(SavedStateHandle(), store)
+        assertEquals(pending, restored.pending)
+        assertEquals(listOf(stroke(1f)), restored.document.objects.toList())
+        assertEquals(1, restored.history.undoCount)
+        restored.commitPending()
+        assertNull(restored.pending)
+        assertEquals(listOf(stroke(1f), pending), restored.document.objects.toList())
+        restored.undo()
+        assertEquals(listOf(stroke(1f)), restored.document.objects.toList())
+        restored.redo()
+        assertEquals(pending, restored.document.objects.last())
+    }
+
     private fun model(
         savedState: SavedStateHandle = SavedStateHandle(),
         store: SessionStore = MemorySessionStore(),
@@ -147,12 +237,42 @@ class DrawingViewModelTest {
         inputType = InputType.FINGER,
     )
 
+    private fun shape(x: Float) = DrawObject.Shape(
+        kind = ShapeKind.RECTANGLE,
+        x1 = x,
+        y1 = 2f,
+        x2 = x + 30f,
+        y2 = 20f,
+        filled = false,
+        color = 0xFF000000.toInt(),
+        alpha = 1f,
+        widthPx = 4f,
+        inputType = InputType.FINGER,
+    )
+
     private fun stroke(x: Float) = DrawObject.Stroke(
         points = listOf(StrokePoint(x, 0f, 1f, 0L)),
         color = 0xFF000000.toInt(),
         baseWidthPx = 4f,
         inputType = InputType.STYLUS,
     )
+}
+
+private class CodecSessionStore : SessionStore {
+    private var bytes: ByteArray? = null
+
+    override fun load(): SessionLoad {
+        val saved = bytes ?: return SessionLoad.Missing
+        return SessionCodec.decode(saved)
+    }
+
+    override fun save(snapshot: SessionSnapshot) {
+        bytes = SessionCodec.encode(snapshot)
+    }
+
+    override fun delete() {
+        bytes = null
+    }
 }
 
 private class MemorySessionStore : SessionStore {

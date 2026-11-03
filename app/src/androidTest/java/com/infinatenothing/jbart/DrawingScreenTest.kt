@@ -1,6 +1,13 @@
 package com.infinatenothing.jbart
 
+import android.view.InputDevice
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewGroup
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.lifecycle.ViewModelProvider
+import com.infinatenothing.jbart.canvas.DrawingView
+import com.infinatenothing.jbart.model.DrawObject
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
@@ -12,6 +19,8 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -83,10 +92,118 @@ class DrawingScreenTest {
     }
 
     @Test
+    fun pendingRectangleMovesSurvivesRecreateThenCommitsOnTapOutside() {
+        rule.onNodeWithTag("tool_shape").performScrollTo().performClick()
+        rule.waitForIdle()
+        val model = ViewModelProvider(rule.activity)[DrawingViewModel::class.java]
+        if (model.pending != null) {
+            rule.runOnUiThread { model.undo() }
+            rule.waitForIdle()
+        }
+        val before = model.document.objects.size
+        val view = drawingView()
+        assertTrue(view.width > 200 && view.height > 200)
+        drag(view, view.width * 0.18f, view.height * 0.22f, view.width * 0.62f, view.height * 0.58f)
+        val drawn = model.pending as DrawObject.Shape
+        assertEquals(before, model.document.objects.size)
+        val startX = drawn.x1
+        val centerX = (drawn.x1 + drawn.x2) / 2f
+        val centerY = (drawn.y1 + drawn.y2) / 2f
+        drag(view, centerX, centerY, centerX + view.width * 0.06f, centerY + view.height * 0.04f)
+        val moved = model.pending as DrawObject.Shape
+        assertTrue(moved.x1 != startX || moved.y1 != drawn.y1)
+        rule.activityRule.scenario.recreate()
+        rule.waitForIdle()
+        val restored = ViewModelProvider(rule.activity)[DrawingViewModel::class.java]
+        val still = restored.pending as DrawObject.Shape
+        assertEquals(moved.x1, still.x1, 0.5f)
+        assertEquals(moved.y1, still.y1, 0.5f)
+        assertEquals(moved.rotationDeg, still.rotationDeg, 0f)
+        assertEquals(before, restored.document.objects.size)
+        val again = drawingView()
+        tap(again, again.width * 0.93f, again.height * 0.07f)
+        assertNull(restored.pending)
+        assertEquals(before + 1, restored.document.objects.size)
+    }
+
+    @Test
     fun eraserSettingsPopupShowsSizeSliderOnly() {
         rule.onNodeWithTag("tool_eraser").performClick()
         rule.onNodeWithTag("tool_eraser").performClick()
         rule.onNodeWithTag("eraser_size_slider").assertIsDisplayed()
         assertTrue(rule.onAllNodesWithTag("brush_opacity_slider").fetchSemanticsNodes().isEmpty())
+    }
+
+    private fun drawingView(): DrawingView {
+        lateinit var found: DrawingView
+        rule.runOnUiThread {
+            found = findDrawing(rule.activity.window.decorView) ?: error("drawing view missing")
+        }
+        return found
+    }
+
+    private fun findDrawing(view: View): DrawingView? {
+        if (view is DrawingView) return view
+        if (view is ViewGroup) {
+            for (i in 0 until view.childCount) {
+                findDrawing(view.getChildAt(i))?.let { return it }
+            }
+        }
+        return null
+    }
+
+    private fun drag(view: DrawingView, x1: Float, y1: Float, x2: Float, y2: Float) {
+        val down = android.os.SystemClock.uptimeMillis()
+        rule.runOnUiThread {
+            dispatch(view, MotionEvent.ACTION_DOWN, x1, y1, down, down)
+            dispatch(view, MotionEvent.ACTION_MOVE, (x1 + x2) / 2f, (y1 + y2) / 2f, down, down + 16)
+            dispatch(view, MotionEvent.ACTION_MOVE, x2, y2, down, down + 32)
+            dispatch(view, MotionEvent.ACTION_UP, x2, y2, down, down + 48)
+        }
+        rule.waitForIdle()
+    }
+
+    private fun tap(view: DrawingView, x: Float, y: Float) {
+        val down = android.os.SystemClock.uptimeMillis()
+        rule.runOnUiThread {
+            dispatch(view, MotionEvent.ACTION_DOWN, x, y, down, down)
+            dispatch(view, MotionEvent.ACTION_UP, x, y, down, down + 16)
+        }
+        rule.waitForIdle()
+    }
+
+    private fun dispatch(view: DrawingView, action: Int, x: Float, y: Float, down: Long, time: Long) {
+        val properties = arrayOf(
+            MotionEvent.PointerProperties().apply {
+                id = 0
+                toolType = MotionEvent.TOOL_TYPE_FINGER
+            },
+        )
+        val coords = arrayOf(
+            MotionEvent.PointerCoords().apply {
+                this.x = x
+                this.y = y
+                pressure = 1f
+                size = 1f
+            },
+        )
+        val event = MotionEvent.obtain(
+            down,
+            time,
+            action,
+            1,
+            properties,
+            coords,
+            0,
+            0,
+            1f,
+            1f,
+            0,
+            0,
+            InputDevice.SOURCE_TOUCHSCREEN,
+            0,
+        )
+        view.dispatchTouchEvent(event)
+        event.recycle()
     }
 }

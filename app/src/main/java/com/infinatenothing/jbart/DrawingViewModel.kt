@@ -18,6 +18,7 @@ import com.infinatenothing.jbart.model.ShapeKind
 import com.infinatenothing.jbart.model.Tool
 import com.infinatenothing.jbart.model.clampBrushSettings
 import com.infinatenothing.jbart.session.FileSessionStore
+import com.infinatenothing.jbart.session.SessionCodec
 import com.infinatenothing.jbart.session.SessionLoad
 import com.infinatenothing.jbart.session.SessionSnapshot
 import com.infinatenothing.jbart.session.SessionStore
@@ -51,6 +52,8 @@ class DrawingViewModel(
         private set
     var shapeFilled by mutableStateOf(false)
         private set
+    var pending by mutableStateOf<DrawObject?>(null)
+        private set
     var revision by mutableIntStateOf(0)
         private set
 
@@ -63,6 +66,7 @@ class DrawingViewModel(
         history.onTrimmed = { dropped ->
             log("trim dropped=$dropped undo=${history.undoCount}")
         }
+        SessionCodec.log = log
         // shortcut: blocks creation until the session file is read, upgrade if startup jank shows up.
         val loaded = try {
             io.submit<SessionLoad> { store.load() }.get(5, TimeUnit.SECONDS)
@@ -73,6 +77,7 @@ class DrawingViewModel(
     }
 
     fun selectTool(value: Tool) {
+        if (value != tool) commitPending()
         tool = value
         writeSettings()
         scheduleSave()
@@ -114,7 +119,44 @@ class DrawingViewModel(
     fun updateShapeFilled(filled: Boolean) {
         if (shapeFilled == filled) return
         shapeFilled = filled
+        synchronized(lock) {
+            val current = pending
+            if (current is DrawObject.Shape && current.filled != filled) {
+                pending = current.copy(filled = filled)
+            }
+        }
         writeSettings()
+        scheduleSave()
+    }
+
+    /** Keeps [obj] editable. It is not in the document and not a history entry. */
+    fun stagePending(obj: DrawObject) {
+        synchronized(lock) {
+            pending = obj
+        }
+        log("pending start ${describe(obj)}")
+        scheduleSave()
+    }
+
+    /** Replaces the pending object after a finished move, resize, or rotate. */
+    fun updatePending(obj: DrawObject) {
+        synchronized(lock) {
+            if (pending == null) return
+            pending = obj
+        }
+        log("pending edit ${describe(obj)}")
+        scheduleSave()
+    }
+
+    fun commitPending() {
+        synchronized(lock) {
+            val obj = pending ?: return
+            pending = null
+            document.objects.add(obj)
+            history.push(obj)
+            revision++
+            log("pending commit objects=${document.objects.size} undo=${history.undoCount}")
+        }
         scheduleSave()
     }
 
@@ -129,16 +171,22 @@ class DrawingViewModel(
 
     fun undo() {
         synchronized(lock) {
-            val entry = history.undo() ?: return
-            if (document.objects.lastOrNull() == entry) {
-                document.objects.removeAt(document.objects.lastIndex)
+            if (pending != null) {
+                pending = null
+                log("pending discard")
+            } else {
+                val entry = history.undo() ?: return
+                if (document.objects.lastOrNull() == entry) {
+                    document.objects.removeAt(document.objects.lastIndex)
+                }
+                revision++
             }
-            revision++
         }
         scheduleSave()
     }
 
     fun redo() {
+        if (pending != null) commitPending()
         synchronized(lock) {
             val entry = history.redo() ?: return
             document.objects.add(entry)
@@ -157,7 +205,8 @@ class DrawingViewModel(
                 store.save(snapshot)
                 log(
                     "save onStop objects=${snapshot.objects.size} undo=${snapshot.undoCount} redo=${snapshot.redo.size} " +
-                        "shape=${snapshot.shapeKind} constrain=${snapshot.shapeConstrain} filled=${snapshot.shapeFilled}",
+                        "shape=${snapshot.shapeKind} constrain=${snapshot.shapeConstrain} filled=${snapshot.shapeFilled} " +
+                        "pending=${snapshot.pending != null}",
                 )
             }
         }
@@ -192,10 +241,12 @@ class DrawingViewModel(
                     document.objects.addAll(snap.objects)
                     val undoCount = snap.undoCount.coerceIn(0, snap.objects.size)
                     history.replace(snap.objects.takeLast(undoCount), snap.redo)
+                    pending = snap.pending
                 }
                 log(
                     "restore objects=${snap.objects.size} undo=${history.undoCount} redo=${history.redoCount} " +
-                        "shape=${snap.shapeKind} constrain=${snap.shapeConstrain} filled=${snap.shapeFilled}",
+                        "shape=${snap.shapeKind} constrain=${snap.shapeConstrain} filled=${snap.shapeFilled} " +
+                        "pending=${snap.pending != null}",
                 )
                 snap
             }
@@ -256,8 +307,9 @@ class DrawingViewModel(
                 try {
                     store.save(snapshot)
                     log(
-                        "save objects=${snapshot.objects.size} undo=${snapshot.undoCount} redo=${snapshot.redo.size} " +
-                            "shape=${snapshot.shapeKind} constrain=${snapshot.shapeConstrain} filled=${snapshot.shapeFilled}",
+                    "save objects=${snapshot.objects.size} undo=${snapshot.undoCount} redo=${snapshot.redo.size} " +
+                        "shape=${snapshot.shapeKind} constrain=${snapshot.shapeConstrain} filled=${snapshot.shapeFilled} " +
+                        "pending=${snapshot.pending != null}",
                     )
                 } catch (e: Exception) {
                     log("save failed ${e.message}")
@@ -282,7 +334,16 @@ class DrawingViewModel(
             shapeKind = shapeKind,
             shapeConstrain = shapeConstrain,
             shapeFilled = shapeFilled,
+            pending = pending,
         )
+    }
+
+    private fun describe(obj: DrawObject): String {
+        return when (obj) {
+            is DrawObject.Shape -> "kind=${obj.kind} rotation=${obj.rotationDeg} box=${obj.x1},${obj.y1},${obj.x2},${obj.y2}"
+            is DrawObject.Line -> "line"
+            else -> obj.tool.name
+        }
     }
 
     companion object {
