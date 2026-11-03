@@ -191,6 +191,66 @@ class DrawingViewModelTest {
     }
 
     @Test
+    fun pendingLineStaysOutOfHistoryUntilCommitOrToolSwitch() {
+        val model = model()
+        val kept = stroke(1f)
+        model.commit(kept)
+        model.undo()
+        val undo = model.history.undoCount
+        val redo = model.history.redoCount
+        model.stagePending(line())
+        model.updatePending(line().copy(x2 = 30f))
+        assertTrue(model.document.objects.isEmpty())
+        assertEquals(undo, model.history.undoCount)
+        assertEquals(redo, model.history.redoCount)
+        assertEquals(30f, (model.pending as DrawObject.Line).x2, 0f)
+
+        model.undo()
+        assertNull(model.pending)
+        assertEquals(undo, model.history.undoCount)
+        assertEquals(redo, model.history.redoCount)
+        assertTrue(model.document.objects.isEmpty())
+
+        model.stagePending(line())
+        model.updatePending(line().copy(x2 = 18f))
+        model.commitPending()
+        assertNull(model.pending)
+        assertEquals(1, model.document.objects.size)
+        assertEquals(18f, (model.document.objects.single() as DrawObject.Line).x2, 0f)
+        assertEquals(1, model.history.undoCount)
+
+        model.stagePending(line().copy(x2 = 22f))
+        model.updatePending(line().copy(x2 = 24f))
+        model.selectTool(Tool.LINE)
+        assertEquals(Tool.LINE, model.tool)
+        assertNull(model.pending)
+        assertEquals(2, model.document.objects.size)
+        assertEquals(24f, (model.document.objects.last() as DrawObject.Line).x2, 0f)
+        assertEquals(2, model.history.undoCount)
+    }
+
+    @Test
+    fun encodedPendingLineRestoresAsPendingThenCommits() {
+        val store = CodecSessionStore()
+        val model = model(store = store)
+        val pending = line().copy(x2 = 40f, y2 = 6f)
+        model.commit(stroke(1f))
+        model.stagePending(pending)
+        model.onHostStop()
+        val restored = model(SavedStateHandle(), store)
+        assertEquals(pending, restored.pending)
+        assertEquals(listOf(stroke(1f)), restored.document.objects.toList())
+        assertEquals(1, restored.history.undoCount)
+        restored.commitPending()
+        assertNull(restored.pending)
+        assertEquals(listOf(stroke(1f), pending), restored.document.objects.toList())
+        restored.undo()
+        assertEquals(listOf(stroke(1f)), restored.document.objects.toList())
+        restored.redo()
+        assertEquals(pending, restored.document.objects.last())
+    }
+
+    @Test
     fun encodedPendingShapeRestoresAsPendingThenCommits() {
         val store = CodecSessionStore()
         val model = model(store = store)

@@ -205,6 +205,31 @@ class SessionCodecTest {
     }
 
     @Test
+    fun version4RoundTripKeepsAPendingLineOutOfTheDocument() {
+        val pending = line().copy(x2 = 44f, y2 = 8f)
+        val snapshot = SessionSnapshot(
+            width = 90,
+            height = 70,
+            backgroundColor = 0xFFFFFFFF.toInt(),
+            objects = listOf(line(), shape(ShapeKind.RECTANGLE, filled = false, x = 3f)),
+            undoCount = 2,
+            redo = listOf(stroke(2f)),
+            tool = Tool.LINE,
+            brush = BrushSettings(),
+            eraser = BrushSettings(sizeDp = 16f),
+            lineSnap = false,
+            pending = pending,
+        )
+        val decoded = SessionCodec.decode(SessionCodec.encode(snapshot))
+        assertEquals(SessionLoad.Ok(snapshot), decoded)
+        val loaded = (decoded as SessionLoad.Ok).snapshot
+        assertEquals(pending, loaded.pending)
+        assertFalse(loaded.objects.contains(pending))
+        assertEquals(2, loaded.undoCount)
+        assertEquals(1, loaded.redo.size)
+    }
+
+    @Test
     fun badPendingTagDropsOnlyThePendingObject() {
         val snapshot = SessionSnapshot(
             width = 40,

@@ -127,6 +127,46 @@ class DrawingScreenTest {
     }
 
     @Test
+    fun pendingLineEndpointDragSurvivesRecreateThenCommitsOnTapOutside() {
+        rule.onNodeWithTag("tool_line").performScrollTo().performClick()
+        rule.onNodeWithTag("line_snap_toggle").performClick()
+        rule.waitForIdle()
+        val model = ViewModelProvider(rule.activity)[DrawingViewModel::class.java]
+        if (model.pending != null) {
+            rule.runOnUiThread { model.undo() }
+            rule.waitForIdle()
+        }
+        val before = model.document.objects.size
+        val view = drawingView()
+        assertTrue(view.width > 200 && view.height > 200)
+        val y = view.height * 0.45f
+        drag(view, view.width * 0.25f, y, view.width * 0.55f, y)
+        val drawn = model.pending as DrawObject.Line
+        assertEquals(before, model.document.objects.size)
+        drag(view, drawn.x2, drawn.y2, drawn.x2 + view.width * 0.08f, drawn.y2 + view.height * 0.06f)
+        val edited = model.pending as DrawObject.Line
+        assertEquals(drawn.x1, edited.x1, 1f)
+        assertEquals(drawn.y1, edited.y1, 1f)
+        assertTrue(edited.x2 != drawn.x2 || edited.y2 != drawn.y2)
+        rule.activityRule.scenario.recreate()
+        rule.waitForIdle()
+        val restored = ViewModelProvider(rule.activity)[DrawingViewModel::class.java]
+        val still = restored.pending as DrawObject.Line
+        assertEquals(edited.x1, still.x1, 0.5f)
+        assertEquals(edited.y1, still.y1, 0.5f)
+        assertEquals(edited.x2, still.x2, 0.5f)
+        assertEquals(edited.y2, still.y2, 0.5f)
+        assertEquals(before, restored.document.objects.size)
+        val again = drawingView()
+        tap(again, again.width * 0.93f, again.height * 0.07f)
+        assertNull(restored.pending)
+        assertEquals(before + 1, restored.document.objects.size)
+        val committed = restored.document.objects.last() as DrawObject.Line
+        assertEquals(still.x2, committed.x2, 0.5f)
+        assertEquals(still.y2, committed.y2, 0.5f)
+    }
+
+    @Test
     fun eraserSettingsPopupShowsSizeSliderOnly() {
         rule.onNodeWithTag("tool_eraser").performClick()
         rule.onNodeWithTag("tool_eraser").performClick()
