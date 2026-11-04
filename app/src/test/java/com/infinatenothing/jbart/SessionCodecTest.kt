@@ -1,6 +1,7 @@
 package com.infinatenothing.jbart
 
 import com.infinatenothing.jbart.model.BrushSettings
+import com.infinatenothing.jbart.model.ColorSettings
 import com.infinatenothing.jbart.model.DrawObject
 import com.infinatenothing.jbart.model.InputType
 import com.infinatenothing.jbart.model.ShapeKind
@@ -166,6 +167,8 @@ class SessionCodecTest {
         assertTrue(snapshot.lineSnap)
         assertEquals(1, snapshot.undoCount)
         assertNull(snapshot.pending)
+        assertEquals(ColorSettings(), snapshot.colors)
+        assertEquals(0xFF000000.toInt(), stroke.color)
     }
 
     @Test
@@ -315,6 +318,90 @@ class SessionCodecTest {
         assertEquals(ShapeKind.ARROW, snapshot.shapeKind)
         assertTrue(snapshot.shapeConstrain)
         assertFalse(snapshot.shapeFilled)
+        assertEquals(ColorSettings(), snapshot.colors)
+        assertEquals(0xFF000000.toInt(), shape.color)
+    }
+
+    @Test
+    fun version5RoundTripKeepsColorsRecentAndColoredPending() {
+        val colors = ColorSettings(
+            stroke = ColorSettings.RED,
+            fill = ColorSettings.BLUE,
+            recent = listOf(ColorSettings.GREEN, ColorSettings.ORANGE, 0x80FF00FF.toInt()),
+        )
+        val pending = shape(ShapeKind.ELLIPSE, filled = true, x = 8f).copy(color = ColorSettings.BLUE)
+        val snapshot = SessionSnapshot(
+            width = 120,
+            height = 90,
+            backgroundColor = 0xFFFFFFFF.toInt(),
+            objects = listOf(
+                stroke(1f).copy(color = ColorSettings.RED),
+                line().copy(color = ColorSettings.RED),
+                shape(ShapeKind.RECTANGLE, filled = false, x = 2f).copy(color = ColorSettings.RED),
+                shape(ShapeKind.TRIANGLE, filled = true, x = 3f).copy(color = ColorSettings.BLUE),
+            ),
+            undoCount = 4,
+            redo = listOf(stroke(4f).copy(color = ColorSettings.GREEN)),
+            tool = Tool.BRUSH,
+            brush = BrushSettings(),
+            eraser = BrushSettings(sizeDp = 16f),
+            shapeFilled = true,
+            pending = pending,
+            colors = colors,
+        )
+        val decoded = SessionCodec.decode(SessionCodec.encode(snapshot))
+        val loaded = (decoded as SessionLoad.Ok).snapshot
+        assertEquals(ColorSettings.RED, loaded.colors.stroke)
+        assertEquals(ColorSettings.BLUE, loaded.colors.fill)
+        assertEquals(
+            listOf(ColorSettings.GREEN, ColorSettings.ORANGE, 0xFFFF00FF.toInt()),
+            loaded.colors.recent,
+        )
+        assertEquals(ColorSettings.RED, (loaded.objects[0] as DrawObject.Stroke).color)
+        assertEquals(ColorSettings.RED, (loaded.objects[1] as DrawObject.Line).color)
+        assertEquals(ColorSettings.RED, (loaded.objects[2] as DrawObject.Shape).color)
+        assertEquals(false, (loaded.objects[2] as DrawObject.Shape).filled)
+        assertEquals(ColorSettings.BLUE, (loaded.objects[3] as DrawObject.Shape).color)
+        assertEquals(pending.copy(color = ColorSettings.BLUE), loaded.pending)
+    }
+
+    @Test
+    fun olderVersionsLoadWithBlackColorsAndEmptyRecent() {
+        for (version in listOf(1, 2, 4)) {
+            val bytes = header(version)
+            val decoded = SessionCodec.decode(bytes)
+            assertTrue("version $version", decoded is SessionLoad.Ok)
+            assertEquals(ColorSettings(), (decoded as SessionLoad.Ok).snapshot.colors)
+        }
+        val version3 = SessionCodec.decode(version3Bytes())
+        assertTrue(version3 is SessionLoad.Ok)
+        assertEquals(ColorSettings(), (version3 as SessionLoad.Ok).snapshot.colors)
+    }
+
+    @Test
+    fun recentCountAboveTheCapFailsTheHeader() {
+        val bytes = ByteArrayOutputStream().also { out ->
+            DataOutputStream(out).use { data ->
+                data.writeInt(SessionCodec.MAGIC)
+                data.writeInt(5)
+                data.writeInt(10)
+                data.writeInt(10)
+                data.writeInt(0xFFFFFFFF.toInt())
+                data.writeUTF("BRUSH")
+                data.writeFloat(4f)
+                data.writeFloat(1f)
+                data.writeFloat(16f)
+                data.writeFloat(1f)
+                data.writeBoolean(true)
+                data.writeUTF("RECTANGLE")
+                data.writeBoolean(false)
+                data.writeBoolean(false)
+                data.writeInt(ColorSettings.RED)
+                data.writeInt(ColorSettings.BLUE)
+                data.writeByte(ColorSettings.MAX_RECENT + 1)
+            }
+        }.toByteArray()
+        assertTrue(SessionCodec.decode(bytes) is SessionLoad.Failed)
     }
 
     @Test
@@ -340,6 +427,57 @@ class SessionCodecTest {
         val decoded = SessionCodec.decode(bytes)
         assertTrue(decoded is SessionLoad.Failed)
         assertEquals("unknown version 99", (decoded as SessionLoad.Failed).reason)
+    }
+
+    private fun header(version: Int): ByteArray {
+        return ByteArrayOutputStream().also { out ->
+            DataOutputStream(out).use { data ->
+                data.writeInt(SessionCodec.MAGIC)
+                data.writeInt(version)
+                data.writeInt(10)
+                data.writeInt(10)
+                data.writeInt(0xFFFFFFFF.toInt())
+                data.writeUTF("BRUSH")
+                data.writeFloat(4f)
+                data.writeFloat(1f)
+                data.writeFloat(16f)
+                data.writeFloat(1f)
+                if (version >= 2) data.writeBoolean(true)
+                if (version >= 3) {
+                    data.writeUTF("RECTANGLE")
+                    data.writeBoolean(false)
+                    data.writeBoolean(false)
+                }
+                data.writeInt(0)
+                data.writeInt(0)
+                data.writeInt(0)
+                if (version >= 4) data.writeBoolean(false)
+            }
+        }.toByteArray()
+    }
+
+    private fun version3Bytes(): ByteArray {
+        return ByteArrayOutputStream().also { out ->
+            DataOutputStream(out).use { data ->
+                data.writeInt(SessionCodec.MAGIC)
+                data.writeInt(3)
+                data.writeInt(10)
+                data.writeInt(20)
+                data.writeInt(0xFFFFFFFF.toInt())
+                data.writeUTF("SHAPE")
+                data.writeFloat(4f)
+                data.writeFloat(1f)
+                data.writeFloat(16f)
+                data.writeFloat(1f)
+                data.writeBoolean(true)
+                data.writeUTF("ARROW")
+                data.writeBoolean(true)
+                data.writeBoolean(false)
+                data.writeInt(0)
+                data.writeInt(0)
+                data.writeInt(0)
+            }
+        }.toByteArray()
     }
 
     private fun stroke(x: Float) = DrawObject.Stroke(

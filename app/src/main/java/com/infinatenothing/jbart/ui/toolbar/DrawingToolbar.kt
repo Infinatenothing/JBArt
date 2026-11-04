@@ -2,6 +2,7 @@ package com.infinatenothing.jbart.ui.toolbar
 
 import android.util.Log
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
@@ -14,7 +15,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Redo
@@ -39,6 +39,7 @@ import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -58,6 +59,7 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import com.infinatenothing.jbart.R
 import com.infinatenothing.jbart.model.BrushSettings
+import com.infinatenothing.jbart.model.ColorMath
 import com.infinatenothing.jbart.model.ShapeKind
 import com.infinatenothing.jbart.model.Tool
 
@@ -86,6 +88,10 @@ fun DrawingToolbar(
     onEraserSettings: (BrushSettings) -> Unit,
     onUndo: () -> Unit,
     onRedo: () -> Unit,
+    strokeColor: Int,
+    colorPopup: (@Composable () -> Unit)?,
+    onOpenColor: () -> Unit,
+    onDismissColor: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val items = listOf(
@@ -143,7 +149,8 @@ fun DrawingToolbar(
             icon = Icons.Filled.Palette,
             selected = false,
             enabled = true,
-            onClick = {},
+            markColor = strokeColor,
+            onClick = onOpenColor,
         ),
         Item(
             tag = "tool_undo",
@@ -184,6 +191,9 @@ fun DrawingToolbar(
         items.forEach { item ->
             Box {
                 ToolButton(item)
+                if (item.tag == "tool_color" && colorPopup != null) {
+                    ColorPopup(onDismiss = onDismissColor, content = colorPopup)
+                }
                 if (anchorSettings && item.settingsTool != null && item.settingsTool == settingsTool) {
                     SettingsPopup(
                         tool = item.settingsTool,
@@ -272,6 +282,23 @@ private fun SettingsPopup(
     }
 }
 
+@Composable
+private fun ColorPopup(onDismiss: () -> Unit, content: @Composable () -> Unit) {
+    val density = LocalDensity.current
+    val direction = if (LocalLayoutDirection.current == LayoutDirection.Rtl) -1 else 1
+    val offsetX = with(density) { 56.dp.roundToPx() } * direction
+    Popup(
+        alignment = Alignment.TopStart,
+        offset = IntOffset(offsetX, 0),
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = true),
+    ) {
+        Box(Modifier.width(320.dp)) {
+            content()
+        }
+    }
+}
+
 private data class Item(
     val tag: String,
     val description: String,
@@ -279,6 +306,7 @@ private data class Item(
     val selected: Boolean,
     val enabled: Boolean,
     val settingsTool: Tool? = null,
+    val markColor: Int? = null,
     val onClick: () -> Unit,
     val onLongClick: (() -> Unit)? = null,
 )
@@ -394,5 +422,16 @@ private fun ToolButton(item: Item) {
         contentAlignment = Alignment.Center,
     ) {
         Icon(item.icon, contentDescription = item.description, tint = tint, modifier = Modifier.size(24.dp))
+        val mark = item.markColor
+        if (mark != null) {
+            val edge = Color(ColorMath.contrastOn(mark))
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .size(14.dp)
+                    .border(1.dp, edge, CircleShape)
+                    .background(Color(mark), CircleShape),
+            )
+        }
     }
 }

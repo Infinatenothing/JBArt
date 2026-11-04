@@ -9,19 +9,24 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Xfermode
 import android.util.Log
 import android.view.MotionEvent
 import android.view.View
 import com.infinatenothing.jbart.model.BrushSettings
+import com.infinatenothing.jbart.model.ColorMath
 import com.infinatenothing.jbart.model.DrawObject
 import com.infinatenothing.jbart.model.DrawingDocument
+import com.infinatenothing.jbart.model.EyedropperMath
 import com.infinatenothing.jbart.model.InputType
 import com.infinatenothing.jbart.model.ShapeKind
 import com.infinatenothing.jbart.model.StrokePoint
 import com.infinatenothing.jbart.model.Tool
 import com.infinatenothing.jbart.model.clampBrushSettings
+import com.infinatenothing.jbart.model.colorForShape
+import com.infinatenothing.jbart.model.opaque
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
@@ -73,16 +78,54 @@ class DrawingView(context: Context) : View(context) {
             field = value
             refreshShapePreview("filled=$value")
             val current = pendingShape ?: return
-            if (current.filled == value) return
-            pendingShape = current.copy(filled = value)
+            val nextColor = colorForShape(strokeColor, fillColor, current.kind, value)
+            if (current.filled == value && current.color == nextColor) return
+            pendingShape = current.copy(filled = value, color = nextColor)
             dragOrigin = dragOrigin?.let { origin ->
-                if (origin.filled == value) origin else origin.copy(filled = value)
+                val originColor = colorForShape(strokeColor, fillColor, origin.kind, value)
+                if (origin.filled == value && origin.color == originColor) {
+                    origin
+                } else {
+                    origin.copy(filled = value, color = originColor)
+                }
             }
             if (!drawing) {
                 paintPendingShape()
                 invalidate()
             }
         }
+    var strokeColor: Int = Color.BLACK
+        set(value) {
+            val next = opaque(value)
+            if (field == next) return
+            field = next
+            refreshLiveColor()
+        }
+    var fillColor: Int = Color.BLACK
+        set(value) {
+            val next = opaque(value)
+            if (field == next) return
+            field = next
+            refreshLiveColor()
+        }
+    var eyedropperActive: Boolean = false
+        set(value) {
+            if (field == value) return
+            val starting = value
+            field = value
+            if (starting) {
+                if (drawing) discardActive()
+                if (pendingDrag) cancelPendingDrag()
+                Log.d(TAG, "eyedropper start")
+            } else {
+                loupeVisible = false
+                dropperPointer = MotionEvent.INVALID_POINTER_ID
+                invalidate()
+            }
+        }
+    var eyedropperTarget: String = "stroke"
+    var onEyedropperPick: (Int) -> Unit = {}
+    var onEyedropperCancel: () -> Unit = {}
 
     private var ink: Bitmap? = null
     private var inkCanvas: Canvas? = null
@@ -155,6 +198,28 @@ class DrawingView(context: Context) : View(context) {
     private var dragStartY = 0f
     private val handleOut = FloatArray(18)
     private val lineOut = FloatArray(4)
+    private var loupeVisible = false
+    private var loupeX = 0f
+    private var loupeY = 0f
+    private var loupeColor = Color.BLACK
+    private var dropperPointer = MotionEvent.INVALID_POINTER_ID
+    private val eyedropperOut = FloatArray(2)
+    private val loupePath = Path()
+    private val loupeSrc = Rect()
+    private val loupeDst = RectF()
+    private val loupeChip = RectF()
+    private val hexChars = charArrayOf('#', '0', '0', '0', '0', '0', '0')
+    private val loupeTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.BLACK
+        textSize = 32f
+    }
+    private val loupeFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+    }
+    private val loupeStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = Color.BLACK
+    }
 
     init {
         setWillNotDraw(false)
@@ -166,6 +231,7 @@ class DrawingView(context: Context) : View(context) {
         check(MotionEvent.BUTTON_STYLUS_PRIMARY == InputRouting.BUTTON_STYLUS_PRIMARY)
         check(MotionEvent.BUTTON_STYLUS_SECONDARY == InputRouting.BUTTON_STYLUS_SECONDARY)
         labelPaint.textSize = 12f * resources.displayMetrics.density
+        loupeTextPaint.textSize = 12f * resources.displayMetrics.density
         handleLinePaint.strokeWidth = dp(1.5f)
     }
 
@@ -245,6 +311,7 @@ class DrawingView(context: Context) : View(context) {
                 )
             }
         }
+        if (eyedropperActive && loupeVisible) drawLoupe(canvas)
     }
 
     fun requestRedraw() = invalidate()
@@ -254,7 +321,7 @@ class DrawingView(context: Context) : View(context) {
         canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
         for (obj in document?.objects.orEmpty()) {
             when (obj) {
-                is DrawObject.Stroke -> stampBrush(obj.points, obj.baseWidthPx, obj.alpha, obj.inputType)
+                is DrawObject.Stroke -> stampBrush(obj.points, obj.baseWidthPx, obj.alpha, obj.inputType, obj.color)
                 is DrawObject.EraseStroke -> stampErase(obj.points, obj.baseWidthPx, obj.inputType)
                 is DrawObject.Line -> stampLine(obj.x1, obj.y1, obj.x2, obj.y2, obj.color, obj.widthPx, obj.alpha)
                 is DrawObject.Shape -> stampShape(obj)
@@ -343,7 +410,23 @@ class DrawingView(context: Context) : View(context) {
         }
     }
 
+    fun cancelEyedropperGesture() {
+        loupeVisible = false
+        dropperPointer = MotionEvent.INVALID_POINTER_ID
+        Log.d(TAG, "eyedropper cancel")
+        invalidate()
+        onEyedropperCancel()
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (eyedropperActive) {
+            logEvent(event)
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                parent?.requestDisallowInterceptTouchEvent(true)
+            }
+            onEyedropperTouch(event)
+            return true
+        }
         logEvent(event)
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             parent?.requestDisallowInterceptTouchEvent(true)
@@ -525,7 +608,7 @@ class DrawingView(context: Context) : View(context) {
         scratchCanvas?.let { canvas ->
             clearScratch()
             if (lineStartX != lineEndX || lineStartY != lineEndY) {
-                drawLineOn(canvas, lineStartX, lineStartY, lineEndX, lineEndY, Color.BLACK, strokeBaseWidthPx)
+                drawLineOn(canvas, lineStartX, lineStartY, lineEndX, lineEndY, strokeColor, strokeBaseWidthPx)
             }
         }
         invalidateSegment(lineStartX, lineStartY, previousX, previousY, strokeBaseWidthPx)
@@ -564,7 +647,7 @@ class DrawingView(context: Context) : View(context) {
             y1 = y1,
             x2 = x2,
             y2 = y2,
-            color = Color.BLACK,
+            color = strokeColor,
             alpha = alpha,
             widthPx = width,
             inputType = type,
@@ -573,7 +656,10 @@ class DrawingView(context: Context) : View(context) {
         paintPendingLine()
         onStagePending(line)
         invalidate()
-        Log.d(TAG, "pending line start start=$x1,$y1 end=$x2,$y2 length=$length snap=$lineSnapEnabled")
+        Log.d(
+            TAG,
+            "pending line start start=$x1,$y1 end=$x2,$y2 length=$length snap=$lineSnapEnabled color=${ColorMath.toHex(line.color)}",
+        )
     }
 
     private fun commitStroke(event: MotionEvent) {
@@ -600,7 +686,7 @@ class DrawingView(context: Context) : View(context) {
             renderAll()
             stampErase(points, width, type)
         } else {
-            stampBrush(points, width, alpha, type)
+            stampBrush(points, width, alpha, type, strokeColor)
         }
         clearScratch()
         val obj: DrawObject = if (toolUsed == Tool.ERASER) {
@@ -608,11 +694,14 @@ class DrawingView(context: Context) : View(context) {
         } else {
             DrawObject.Stroke(
                 points = points,
-                color = Color.BLACK,
+                color = strokeColor,
                 baseWidthPx = width,
                 inputType = type,
                 alpha = alpha,
             )
+        }
+        if (toolUsed != Tool.ERASER) {
+            Log.d(TAG, "commit stroke color=${ColorMath.toHex(strokeColor)} alpha=$alpha")
         }
         onCommit(obj)
         ink?.prepareToDraw()
@@ -699,16 +788,16 @@ class DrawingView(context: Context) : View(context) {
             }
         } else {
             val canvas = scratchCanvas ?: return
-            drawSegment(canvas, Color.BLACK)
+            drawSegment(canvas, strokeColor)
         }
     }
 
-    private fun stampBrush(points: List<StrokePoint>, width: Float, alpha: Float, type: InputType) {
+    private fun stampBrush(points: List<StrokePoint>, width: Float, alpha: Float, type: InputType, color: Int) {
         val canvas = scratchCanvas ?: return
         val target = inkCanvas ?: return
         clearScratch()
         geometryXfer = null
-        drawStrokeContents(canvas, points, Color.BLACK, width, type)
+        drawStrokeContents(canvas, points, color, width, type)
         scratch?.prepareToDraw()
         blitPaint.xfermode = null
         blitPaint.alpha = alphaByte(alpha)
@@ -763,6 +852,24 @@ class DrawingView(context: Context) : View(context) {
     private fun invalidateSegment(x1: Float, y1: Float, x2: Float, y2: Float, width: Float) {
         val extra = if (showSnapLabel) labelPaint.textSize * 8f else 0f
         invalidateHull(x1, y1, x2, y2, x2, y2, width + extra)
+    }
+
+    private fun refreshLiveColor() {
+        if (!drawing || activeDrawTool == Tool.ERASER) return
+        when (activeDrawTool) {
+            Tool.LINE -> moveLine(lastRawX, lastRawY)
+            Tool.SHAPE -> moveShape(lastRawX, lastRawY)
+            else -> repaintLiveBrush()
+        }
+    }
+
+    private fun repaintLiveBrush() {
+        val canvas = scratchCanvas ?: return
+        clearScratch()
+        if (strokePoints.isNotEmpty()) {
+            drawStrokeContents(canvas, strokePoints, strokeColor, strokeBaseWidthPx, inputType)
+        }
+        invalidate()
     }
 
     private fun refreshShapePreview(reason: String) {
@@ -833,7 +940,7 @@ class DrawingView(context: Context) : View(context) {
                     shapeEndX,
                     shapeEndY,
                     shapeFilled,
-                    Color.BLACK,
+                    colorForShape(strokeColor, fillColor, shapeKind, shapeFilled),
                     strokeBaseWidthPx,
                 )
             }
@@ -886,7 +993,7 @@ class DrawingView(context: Context) : View(context) {
             x2 = x2,
             y2 = y2,
             filled = filled,
-            color = Color.BLACK,
+            color = colorForShape(strokeColor, fillColor, kind, filled),
             alpha = alpha,
             widthPx = width,
             inputType = type,
@@ -897,7 +1004,7 @@ class DrawingView(context: Context) : View(context) {
         invalidate()
         Log.d(
             TAG,
-            "pending start kind=$kind start=$x1,$y1 end=$x2,$y2 constrain=$constrain filled=$filled span=$span",
+            "pending start kind=$kind start=$x1,$y1 end=$x2,$y2 constrain=$constrain filled=$filled span=$span color=${ColorMath.toHex(shape.color)}",
         )
     }
 
@@ -1399,6 +1506,127 @@ class DrawingView(context: Context) : View(context) {
         invalidate(left.toInt(), top.toInt(), right.toInt() + 1, bottom.toInt() + 1)
     }
 
+    private fun onEyedropperTouch(event: MotionEvent) {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                dropperPointer = event.getPointerId(0)
+                showLoupe(event.getX(0), event.getY(0))
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val index = event.findPointerIndex(dropperPointer)
+                if (index >= 0) showLoupe(event.getX(index), event.getY(index))
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
+                if (event.actionMasked == MotionEvent.ACTION_POINTER_UP &&
+                    event.getPointerId(event.actionIndex) != dropperPointer
+                ) {
+                    return
+                }
+                val index = event.findPointerIndex(dropperPointer)
+                if (index < 0) return
+                val color = sampleVisible(event.getX(index), event.getY(index))
+                loupeVisible = false
+                dropperPointer = MotionEvent.INVALID_POINTER_ID
+                invalidate()
+                Log.d(TAG, "eyedropper pick color=${ColorMath.toHex(color)} target=$eyedropperTarget")
+                onEyedropperPick(color)
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                loupeVisible = false
+                dropperPointer = MotionEvent.INVALID_POINTER_ID
+                invalidate()
+                Log.d(TAG, "eyedropper cancel")
+                onEyedropperCancel()
+            }
+            else -> Unit
+        }
+    }
+
+    private fun showLoupe(x: Float, y: Float) {
+        loupeX = x
+        loupeY = y
+        loupeColor = sampleVisible(x, y)
+        loupeVisible = true
+        invalidate()
+    }
+
+    private fun sampleVisible(x: Float, y: Float): Int {
+        val background = document?.backgroundColor ?: Color.WHITE
+        val bitmap = ink
+        if (bitmap == null || bitmap.width <= 0 || bitmap.height <= 0) return opaque(background)
+        EyedropperMath.toBitmapCoords(x, y, width, height, bitmap.width, bitmap.height, eyedropperOut)
+        val bx = eyedropperOut[0].roundToInt().coerceIn(0, bitmap.width - 1)
+        val by = eyedropperOut[1].roundToInt().coerceIn(0, bitmap.height - 1)
+        return ColorMath.compositeOver(bitmap.getPixel(bx, by), background)
+    }
+
+    private fun drawLoupe(canvas: Canvas) {
+        val diameter = dp(96f)
+        val radius = diameter * 0.5f
+        val gap = dp(20f)
+        var centerX = loupeX
+        var centerY = loupeY - diameter - gap
+        if (centerY < radius) centerY = loupeY + diameter + gap
+        val maxX = (width - radius).coerceAtLeast(radius)
+        val maxY = (height - radius).coerceAtLeast(radius)
+        centerX = centerX.coerceIn(radius, maxX)
+        centerY = centerY.coerceIn(radius, maxY)
+        val srcSpan = diameter / 8f
+        val srcLeft = loupeX - srcSpan * 0.5f
+        val srcTop = loupeY - srcSpan * 0.5f
+        loupeSrc.set(
+            srcLeft.toInt(),
+            srcTop.toInt(),
+            (srcLeft + srcSpan).toInt().coerceAtLeast(srcLeft.toInt() + 1),
+            (srcTop + srcSpan).toInt().coerceAtLeast(srcTop.toInt() + 1),
+        )
+        loupeDst.set(centerX - radius, centerY - radius, centerX + radius, centerY + radius)
+        val checkpoint = canvas.save()
+        loupePath.rewind()
+        loupePath.addCircle(centerX, centerY, radius, Path.Direction.CW)
+        canvas.clipPath(loupePath)
+        canvas.drawColor(document?.backgroundColor ?: Color.WHITE)
+        ink?.let { bitmap -> canvas.drawBitmap(bitmap, loupeSrc, loupeDst, null) }
+        canvas.restoreToCount(checkpoint)
+        loupeStrokePaint.strokeWidth = dp(2f)
+        loupeStrokePaint.color = Color.BLACK
+        canvas.drawCircle(centerX, centerY, radius, loupeStrokePaint)
+        val arm = dp(8f)
+        canvas.drawLine(centerX - arm, centerY, centerX + arm, centerY, loupeStrokePaint)
+        canvas.drawLine(centerX, centerY - arm, centerX, centerY + arm, loupeStrokePaint)
+        writeHex(loupeColor)
+        val textWidth = loupeTextPaint.measureText(hexChars, 0, 7)
+        val chipHeight = dp(28f)
+        val chipWidth = textWidth + dp(36f)
+        var chipTop = centerY + radius + dp(6f)
+        if (chipTop + chipHeight > height) chipTop = centerY - radius - dp(6f) - chipHeight
+        var chipLeft = centerX - chipWidth * 0.5f
+        if (chipLeft < 0f) chipLeft = 0f
+        if (chipLeft + chipWidth > width) chipLeft = (width - chipWidth).coerceAtLeast(0f)
+        loupeChip.set(chipLeft, chipTop, chipLeft + chipWidth, chipTop + chipHeight)
+        loupeFillPaint.color = Color.WHITE
+        canvas.drawRoundRect(loupeChip, dp(6f), dp(6f), loupeFillPaint)
+        loupeStrokePaint.strokeWidth = dp(1f)
+        canvas.drawRoundRect(loupeChip, dp(6f), dp(6f), loupeStrokePaint)
+        val swatch = dp(16f)
+        val swatchLeft = chipLeft + dp(6f)
+        val swatchTop = chipTop + (chipHeight - swatch) * 0.5f
+        loupeChip.set(swatchLeft, swatchTop, swatchLeft + swatch, swatchTop + swatch)
+        loupeFillPaint.color = loupeColor
+        canvas.drawRect(loupeChip, loupeFillPaint)
+        loupeTextPaint.color = Color.BLACK
+        val textY = chipTop + chipHeight * 0.5f - (loupeTextPaint.ascent() + loupeTextPaint.descent()) * 0.5f
+        canvas.drawText(hexChars, 0, 7, chipLeft + dp(28f), textY, loupeTextPaint)
+    }
+
+    private fun writeHex(argb: Int) {
+        val rgb = argb and 0x00FFFFFF
+        for (i in 0 until 6) {
+            val nibble = (rgb shr ((5 - i) * 4)) and 0xF
+            hexChars[i + 1] = HEX_DIGITS[nibble]
+        }
+    }
+
     private fun logEvent(event: MotionEvent) {
         val index = event.actionIndex.coerceAtMost((event.pointerCount - 1).coerceAtLeast(0))
         val toolType = event.getToolType(index)
@@ -1433,5 +1661,8 @@ class DrawingView(context: Context) : View(context) {
         const val TAG = "DrawingView"
         const val MIN_LINE_DP = 4f
         const val MIN_SHAPE_DP = 4f
+        val HEX_DIGITS = charArrayOf(
+            '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F',
+        )
     }
 }
