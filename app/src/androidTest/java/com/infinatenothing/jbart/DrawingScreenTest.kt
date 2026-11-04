@@ -6,8 +6,12 @@ import android.view.View
 import android.view.ViewGroup
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.lifecycle.ViewModelProvider
+import androidx.test.espresso.Espresso
 import com.infinatenothing.jbart.canvas.DrawingView
+import com.infinatenothing.jbart.model.BrushSettings
+import com.infinatenothing.jbart.model.ColorSettings
 import com.infinatenothing.jbart.model.DrawObject
+import com.infinatenothing.jbart.model.Tool
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
@@ -164,6 +168,48 @@ class DrawingScreenTest {
         val committed = restored.document.objects.last() as DrawObject.Line
         assertEquals(still.x2, committed.x2, 0.5f)
         assertEquals(still.y2, committed.y2, 0.5f)
+    }
+
+    @Test
+    fun colorPickerSetsStrokeAndFillAndEyedropperSamplesTheStroke() {
+        val model = ViewModelProvider(rule.activity)[DrawingViewModel::class.java]
+        rule.runOnUiThread {
+            if (model.pending != null) model.undo()
+            model.selectTool(Tool.BRUSH)
+            model.updateBrush(BrushSettings(sizeDp = 28f, opacity = 1f))
+        }
+        rule.waitForIdle()
+        rule.onNodeWithTag("tool_color").performScrollTo().performClick()
+        assertEquals(Tool.BRUSH, model.tool)
+        val red = ColorSettings.PALETTE.indexOf(ColorSettings.RED)
+        rule.onNodeWithTag("color_swatch_$red").performScrollTo().performClick()
+        Espresso.pressBack()
+        rule.waitForIdle()
+        val view = drawingView()
+        val y = view.height * 0.42f
+        drag(view, view.width * 0.28f, y, view.width * 0.72f, y)
+        val stroke = model.document.objects.last() as DrawObject.Stroke
+        assertEquals(ColorSettings.RED, stroke.color)
+
+        rule.onNodeWithTag("tool_color").performScrollTo().performClick()
+        rule.onNodeWithTag("color_target_fill").performScrollTo().performClick()
+        rule.onNodeWithTag("color_target_fill").assertIsSelected()
+        val blue = ColorSettings.PALETTE.indexOf(ColorSettings.BLUE)
+        rule.onNodeWithTag("color_swatch_$blue").performScrollTo().performClick()
+        rule.waitForIdle()
+        assertEquals(ColorSettings.BLUE, model.colorSettings.fill)
+
+        val before = model.document.objects.size
+        val undo = model.history.undoCount
+        rule.onNodeWithTag("color_eyedropper").performScrollTo().performClick()
+        rule.waitForIdle()
+        val again = drawingView()
+        tap(again, again.width * 0.5f, y)
+        rule.waitForIdle()
+        val after = ViewModelProvider(rule.activity)[DrawingViewModel::class.java]
+        assertEquals(ColorSettings.RED, after.colorSettings.stroke)
+        assertEquals(before, after.document.objects.size)
+        assertEquals(undo, after.history.undoCount)
     }
 
     @Test

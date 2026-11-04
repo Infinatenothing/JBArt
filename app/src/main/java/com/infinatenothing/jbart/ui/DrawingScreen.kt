@@ -2,17 +2,22 @@ package com.infinatenothing.jbart.ui
 
 import android.app.Activity
 import android.util.Log
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
@@ -22,6 +27,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
@@ -30,13 +36,17 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
 import com.infinatenothing.jbart.DrawingViewModel
+import com.infinatenothing.jbart.R
 import com.infinatenothing.jbart.canvas.DrawingView
+import com.infinatenothing.jbart.model.ColorTarget
 import com.infinatenothing.jbart.model.Tool
 import com.infinatenothing.jbart.ui.toolbar.BrushSettingsPanel
+import com.infinatenothing.jbart.ui.toolbar.ColorPickerPanel
 import com.infinatenothing.jbart.ui.toolbar.DrawingToolbar
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3WindowSizeClassApi::class)
@@ -51,6 +61,7 @@ fun DrawingScreen(model: DrawingViewModel) {
         Log.d("JBArtLayout", "widthClass=$widthClass widthDp=$widthDp heightDp=$heightDp")
     }
     var settingsTool by remember { mutableStateOf<Tool?>(null) }
+    var colorPickerOpen by remember { mutableStateOf(false) }
     val revision = model.revision
     val pending = model.pending
     val canUndo = pending != null || model.history.canUndo
@@ -76,7 +87,13 @@ fun DrawingScreen(model: DrawingViewModel) {
                 view.lineSnapEnabled = model.lineSnapEnabled
                 view.shapeKind = model.shapeKind
                 view.shapeConstrain = model.shapeConstrain
+                view.strokeColor = model.colorSettings.stroke
+                view.fillColor = model.colorSettings.fill
                 view.shapeFilled = model.shapeFilled
+                view.eyedropperTarget = if (model.colorTarget == ColorTarget.FILL) "fill" else "stroke"
+                view.onEyedropperPick = { model.pickEyedropper(it) }
+                view.onEyedropperCancel = { model.cancelEyedropper() }
+                view.eyedropperActive = model.eyedropperActive
                 view.onCommit = { model.commit(it) }
                 view.onStagePending = { model.stagePending(it) }
                 view.onUpdatePending = { model.updatePending(it) }
@@ -84,6 +101,22 @@ fun DrawingScreen(model: DrawingViewModel) {
                 view.bindPending(pending)
                 view.sync(model.document, revision)
             },
+        )
+    }
+    val colorPicker = @Composable { modifier: Modifier ->
+        ColorPickerPanel(
+            stroke = model.colorSettings.stroke,
+            fill = model.colorSettings.fill,
+            target = model.colorTarget,
+            recent = model.colorSettings.recent,
+            onTarget = { model.chooseColorTarget(it) },
+            onStroke = { model.updateStrokeColor(it) },
+            onFill = { model.updateFillColor(it) },
+            onEyedropper = {
+                colorPickerOpen = false
+                model.startEyedropper()
+            },
+            modifier = modifier,
         )
     }
     val toolbar = @Composable { vertical: Boolean, modifier: Modifier ->
@@ -106,14 +139,17 @@ fun DrawingScreen(model: DrawingViewModel) {
             settingsTool = settingsTool,
             onSelectTool = { tool ->
                 canvasView[0]?.flushPendingEdit()
+                if (model.eyedropperActive) canvasView[0]?.cancelEyedropperGesture()
                 model.selectTool(tool)
                 settingsTool = null
+                colorPickerOpen = false
             },
             onOpenSettings = { tool ->
                 canvasView[0]?.flushPendingEdit()
                 model.commitPending()
                 model.selectTool(tool)
                 settingsTool = tool
+                colorPickerOpen = false
             },
             onDismissSettings = { settingsTool = null },
             onBrushSettings = { model.updateBrush(it) },
@@ -123,20 +159,44 @@ fun DrawingScreen(model: DrawingViewModel) {
                 canvasView[0]?.flushPendingEdit()
                 model.redo()
             },
+            strokeColor = model.colorSettings.stroke,
+            colorPopup = if (!compact && colorPickerOpen && !model.eyedropperActive) {
+                { colorPicker(Modifier.fillMaxWidth()) }
+            } else {
+                null
+            },
+            onOpenColor = {
+                if (model.eyedropperActive) {
+                    canvasView[0]?.cancelEyedropperGesture() ?: model.cancelEyedropper()
+                }
+                settingsTool = null
+                colorPickerOpen = true
+            },
+            onDismissColor = { colorPickerOpen = false },
             modifier = modifier,
         )
+    }
+    val cancelEyedropper = {
+        canvasView[0]?.cancelEyedropperGesture() ?: model.cancelEyedropper()
+    }
+    if (model.eyedropperActive) {
+        BackHandler(onBack = cancelEyedropper)
     }
     if (compact) {
         Scaffold(bottomBar = { toolbar(false, Modifier) }) { padding ->
             Box(Modifier.padding(padding).fillMaxSize()) {
                 canvas(Modifier.fillMaxSize())
+                if (model.eyedropperActive) EyedropperCancel(cancelEyedropper)
             }
         }
     } else {
         Scaffold { padding ->
             Row(Modifier.padding(padding).fillMaxSize()) {
                 toolbar(true, Modifier.fillMaxHeight().width(80.dp).zIndex(1f))
-                canvas(Modifier.weight(1f).fillMaxHeight())
+                Box(Modifier.weight(1f).fillMaxHeight()) {
+                    canvas(Modifier.fillMaxSize())
+                    if (model.eyedropperActive) EyedropperCancel(cancelEyedropper)
+                }
             }
         }
     }
@@ -156,6 +216,32 @@ fun DrawingScreen(model: DrawingViewModel) {
                 },
                 modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 32.dp),
             )
+        }
+    }
+    if (compact && colorPickerOpen && !model.eyedropperActive) {
+        ModalBottomSheet(
+            onDismissRequest = { colorPickerOpen = false },
+            containerColor = Color.White,
+            dragHandle = { BottomSheetDefaults.DragHandle(color = Color.Black) },
+        ) {
+            colorPicker(Modifier.fillMaxWidth().padding(bottom = 24.dp))
+        }
+    }
+}
+
+@Composable
+private fun EyedropperCancel(onCancel: () -> Unit) {
+    Box(Modifier.fillMaxSize()) {
+        TextButton(
+            onClick = onCancel,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(12.dp)
+                .heightIn(min = 48.dp)
+                .background(Color.White)
+                .testTag("eyedropper_cancel"),
+        ) {
+            Text(text = stringResource(R.string.eyedropper_cancel), color = Color.Black)
         }
     }
 }

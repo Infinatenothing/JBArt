@@ -2,6 +2,8 @@ package com.infinatenothing.jbart
 
 import androidx.lifecycle.SavedStateHandle
 import com.infinatenothing.jbart.model.BrushSettings
+import com.infinatenothing.jbart.model.ColorSettings
+import com.infinatenothing.jbart.model.ColorTarget
 import com.infinatenothing.jbart.model.DrawObject
 import com.infinatenothing.jbart.model.HistoryManager
 import com.infinatenothing.jbart.model.InputType
@@ -269,6 +271,164 @@ class DrawingViewModelTest {
         assertEquals(listOf(stroke(1f)), restored.document.objects.toList())
         restored.redo()
         assertEquals(pending, restored.document.objects.last())
+    }
+
+    @Test
+    fun commitUsesStrokeOrFillColorAndRecentUpdatesOnlyOnCommit() {
+        val model = model()
+        model.updateStrokeColor(ColorSettings.RED)
+        model.updateFillColor(ColorSettings.BLUE)
+        assertTrue(model.colorSettings.recent.isEmpty())
+
+        model.commit(stroke(1f).copy(color = model.colorSettings.stroke))
+        model.commit(line().copy(color = model.colorSettings.stroke))
+        model.commit(shape(2f).copy(color = model.colorSettings.stroke, filled = false))
+        val filled = shape(3f).copy(
+            kind = ShapeKind.ELLIPSE,
+            filled = true,
+            color = model.colorSettings.fill,
+        )
+        model.commit(filled)
+        val arrow = shape(4f).copy(
+            kind = ShapeKind.ARROW,
+            filled = true,
+            color = model.colorSettings.stroke,
+        )
+        model.commit(arrow)
+
+        assertEquals(ColorSettings.RED, (model.document.objects[0] as DrawObject.Stroke).color)
+        assertEquals(ColorSettings.RED, (model.document.objects[1] as DrawObject.Line).color)
+        assertEquals(ColorSettings.RED, (model.document.objects[2] as DrawObject.Shape).color)
+        assertEquals(ColorSettings.BLUE, (model.document.objects[3] as DrawObject.Shape).color)
+        assertEquals(ColorSettings.RED, (model.document.objects[4] as DrawObject.Shape).color)
+        assertEquals(listOf(ColorSettings.RED, ColorSettings.BLUE), model.colorSettings.recent)
+
+        model.updateStrokeColor(ColorSettings.GREEN)
+        assertEquals(ColorSettings.RED, (model.document.objects[0] as DrawObject.Stroke).color)
+        assertEquals(listOf(ColorSettings.RED, ColorSettings.BLUE), model.colorSettings.recent)
+
+        model.undo()
+        model.undo()
+        model.redo()
+        assertEquals(ColorSettings.BLUE, (model.document.objects.last() as DrawObject.Shape).color)
+        model.redo()
+        assertEquals(ColorSettings.RED, (model.document.objects.last() as DrawObject.Shape).color)
+    }
+
+    @Test
+    fun colorChangeRecolorsPendingShapeAndLineOnly() {
+        val model = model()
+        model.updateFillColor(ColorSettings.BLUE)
+        val committed = shape(1f).copy(color = ColorSettings.RED)
+        model.commit(committed)
+        model.stagePending(line().copy(color = ColorSettings.BLACK))
+        model.updateStrokeColor(ColorSettings.ORANGE)
+        assertEquals(ColorSettings.ORANGE, (model.pending as DrawObject.Line).color)
+        assertEquals(ColorSettings.RED, (model.document.objects.single() as DrawObject.Shape).color)
+
+        model.commitPending()
+        model.stagePending(shape(6f).copy(filled = false, color = ColorSettings.BLACK))
+        model.updateStrokeColor(ColorSettings.GREEN)
+        assertEquals(ColorSettings.GREEN, (model.pending as DrawObject.Shape).color)
+        model.updateShapeFilled(true)
+        val filled = model.pending as DrawObject.Shape
+        assertTrue(filled.filled)
+        assertEquals(ColorSettings.BLUE, filled.color)
+        model.updateFillColor(ColorSettings.PURPLE)
+        assertEquals(ColorSettings.PURPLE, (model.pending as DrawObject.Shape).color)
+
+        model.updateShapeFilled(false)
+        assertEquals(ColorSettings.GREEN, (model.pending as DrawObject.Shape).color)
+        val arrow = shape(8f).copy(kind = ShapeKind.ARROW, filled = true, color = ColorSettings.BLACK)
+        model.updatePending(arrow)
+        model.updateStrokeColor(ColorSettings.TAN)
+        assertEquals(ColorSettings.TAN, (model.pending as DrawObject.Shape).color)
+        model.updateFillColor(ColorSettings.PINK)
+        assertEquals(ColorSettings.TAN, (model.pending as DrawObject.Shape).color)
+    }
+
+    @Test
+    fun eyedropperSetsTargetColorRecolorsPendingAndSkipsHistory() {
+        val model = model()
+        model.selectTool(Tool.LINE)
+        model.updateFillColor(ColorSettings.BLUE)
+        model.stagePending(line().copy(color = ColorSettings.BLACK))
+        val objects = model.document.objects.size
+        val undo = model.history.undoCount
+        assertEquals(ColorTarget.STROKE, model.colorTarget)
+        model.startEyedropper()
+        assertTrue(model.eyedropperActive)
+        assertEquals(Tool.LINE, model.tool)
+        model.pickEyedropper(0x80FF00FF.toInt())
+        assertFalse(model.eyedropperActive)
+        assertEquals(Tool.LINE, model.tool)
+        assertEquals(0xFFFF00FF.toInt(), model.colorSettings.stroke)
+        assertEquals(listOf(0xFFFF00FF.toInt()), model.colorSettings.recent)
+        assertEquals(0xFFFF00FF.toInt(), (model.pending as DrawObject.Line).color)
+        assertEquals(objects, model.document.objects.size)
+        assertEquals(undo, model.history.undoCount)
+
+        val before = model.colorSettings
+        val pending = model.pending
+        model.startEyedropper()
+        model.cancelEyedropper()
+        assertEquals(before, model.colorSettings)
+        assertEquals(pending, model.pending)
+        assertEquals(Tool.LINE, model.tool)
+        assertFalse(model.eyedropperActive)
+
+        model.chooseColorTarget(ColorTarget.FILL)
+        model.stagePending(
+            shape(3f).copy(kind = ShapeKind.RECTANGLE, filled = true, color = ColorSettings.BLACK),
+        )
+        model.startEyedropper()
+        model.pickEyedropper(ColorSettings.YELLOW)
+        assertEquals(ColorSettings.YELLOW, model.colorSettings.fill)
+        assertEquals(ColorSettings.YELLOW, (model.pending as DrawObject.Shape).color)
+        assertEquals(0xFFFF00FF.toInt(), model.colorSettings.stroke)
+        assertEquals(Tool.LINE, model.tool)
+        assertEquals(undo, model.history.undoCount)
+        assertTrue(model.colorSettings.recent.first() == ColorSettings.YELLOW)
+    }
+
+    @Test
+    fun colorsRestoreFromSavedStateAndFromSessionAndDropperDoesNot() {
+        val store = MemorySessionStore()
+        val handle = SavedStateHandle()
+        val model = model(handle, store)
+        model.selectTool(Tool.SHAPE)
+        model.updateStrokeColor(ColorSettings.RED)
+        model.updateFillColor(ColorSettings.BLUE)
+        model.commit(stroke(1f).copy(color = ColorSettings.RED))
+        model.chooseColorTarget(ColorTarget.FILL)
+        model.startEyedropper()
+        model.onHostStop()
+
+        val fromHandle = model(
+            SavedStateHandle(
+                mapOf(
+                    DrawingViewModel.KEY_STROKE_COLOR to handle.get<Int>(DrawingViewModel.KEY_STROKE_COLOR),
+                    DrawingViewModel.KEY_FILL_COLOR to handle.get<Int>(DrawingViewModel.KEY_FILL_COLOR),
+                    DrawingViewModel.KEY_RECENT_COLORS to handle.get<IntArray>(DrawingViewModel.KEY_RECENT_COLORS),
+                    DrawingViewModel.KEY_TOOL to handle.get<String>(DrawingViewModel.KEY_TOOL),
+                ),
+            ),
+            MemorySessionStore(),
+        )
+        assertEquals(ColorSettings.RED, fromHandle.colorSettings.stroke)
+        assertEquals(ColorSettings.BLUE, fromHandle.colorSettings.fill)
+        assertEquals(listOf(ColorSettings.RED), fromHandle.colorSettings.recent)
+        assertEquals(Tool.SHAPE, fromHandle.tool)
+        assertEquals(ColorTarget.STROKE, fromHandle.colorTarget)
+        assertFalse(fromHandle.eyedropperActive)
+
+        val fromSession = model(SavedStateHandle(), store)
+        assertEquals(ColorSettings.RED, fromSession.colorSettings.stroke)
+        assertEquals(ColorSettings.BLUE, fromSession.colorSettings.fill)
+        assertEquals(listOf(ColorSettings.RED), fromSession.colorSettings.recent)
+        assertEquals(ColorSettings.RED, (fromSession.document.objects.single() as DrawObject.Stroke).color)
+        assertFalse(fromSession.eyedropperActive)
+        assertEquals(ColorTarget.STROKE, fromSession.colorTarget)
     }
 
     private fun model(

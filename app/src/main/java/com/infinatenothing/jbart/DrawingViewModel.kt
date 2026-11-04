@@ -11,12 +11,18 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewmodel.CreationExtras
 import com.infinatenothing.jbart.model.BrushSettings
+import com.infinatenothing.jbart.model.ColorMath
+import com.infinatenothing.jbart.model.ColorSettings
+import com.infinatenothing.jbart.model.ColorTarget
 import com.infinatenothing.jbart.model.DrawObject
 import com.infinatenothing.jbart.model.DrawingDocument
 import com.infinatenothing.jbart.model.HistoryManager
 import com.infinatenothing.jbart.model.ShapeKind
 import com.infinatenothing.jbart.model.Tool
 import com.infinatenothing.jbart.model.clampBrushSettings
+import com.infinatenothing.jbart.model.colorForShape
+import com.infinatenothing.jbart.model.opaque
+import com.infinatenothing.jbart.model.pushRecent
 import com.infinatenothing.jbart.session.FileSessionStore
 import com.infinatenothing.jbart.session.SessionCodec
 import com.infinatenothing.jbart.session.SessionLoad
@@ -52,6 +58,12 @@ class DrawingViewModel(
         private set
     var shapeFilled by mutableStateOf(false)
         private set
+    var colorSettings by mutableStateOf(ColorSettings())
+        private set
+    var colorTarget by mutableStateOf(ColorTarget.STROKE)
+        private set
+    var eyedropperActive by mutableStateOf(false)
+        private set
     var pending by mutableStateOf<DrawObject?>(null)
         private set
     var revision by mutableIntStateOf(0)
@@ -61,6 +73,7 @@ class DrawingViewModel(
     private var saveGeneration = 0
     private val lock = Any()
     private val saveLock = Any()
+    private var toolBeforeEyedropper: Tool? = null
 
     init {
         history.onTrimmed = { dropped ->
@@ -77,6 +90,7 @@ class DrawingViewModel(
     }
 
     fun selectTool(value: Tool) {
+        if (eyedropperActive) cancelEyedropper()
         if (value != tool) commitPending()
         tool = value
         writeSettings()
@@ -121,12 +135,72 @@ class DrawingViewModel(
         shapeFilled = filled
         synchronized(lock) {
             val current = pending
-            if (current is DrawObject.Shape && current.filled != filled) {
-                pending = current.copy(filled = filled)
+            if (current is DrawObject.Shape) {
+                val color = colorForShape(colorSettings.stroke, colorSettings.fill, current.kind, filled)
+                if (current.filled != filled || current.color != color) {
+                    pending = current.copy(filled = filled, color = color)
+                }
             }
         }
         writeSettings()
         scheduleSave()
+    }
+
+    fun chooseColorTarget(target: ColorTarget) {
+        colorTarget = target
+    }
+
+    fun updateStrokeColor(color: Int) {
+        val next = opaque(color)
+        if (colorSettings.stroke == next) return
+        colorSettings = colorSettings.copy(stroke = next)
+        recolorPending()
+        writeSettings()
+        scheduleSave()
+        log("color stroke=${ColorMath.toHex(next)}")
+    }
+
+    fun updateFillColor(color: Int) {
+        val next = opaque(color)
+        if (colorSettings.fill == next) return
+        colorSettings = colorSettings.copy(fill = next)
+        recolorPending()
+        writeSettings()
+        scheduleSave()
+        log("color fill=${ColorMath.toHex(next)}")
+    }
+
+    /** Dropper mode is not a tool and is not written to the session. */
+    fun startEyedropper() {
+        if (eyedropperActive) return
+        toolBeforeEyedropper = tool
+        eyedropperActive = true
+    }
+
+    fun pickEyedropper(color: Int) {
+        if (!eyedropperActive) return
+        val next = opaque(color)
+        val target = colorTarget
+        colorSettings = if (target == ColorTarget.FILL) {
+            colorSettings.copy(fill = next, recent = pushRecent(colorSettings.recent, next))
+        } else {
+            colorSettings.copy(stroke = next, recent = pushRecent(colorSettings.recent, next))
+        }
+        recolorPending()
+        val previous = toolBeforeEyedropper ?: tool
+        eyedropperActive = false
+        toolBeforeEyedropper = null
+        tool = previous
+        writeSettings()
+        scheduleSave()
+    }
+
+    fun cancelEyedropper() {
+        if (!eyedropperActive) return
+        val previous = toolBeforeEyedropper ?: tool
+        eyedropperActive = false
+        toolBeforeEyedropper = null
+        tool = previous
     }
 
     /** Keeps [obj] editable. It is not in the document and not a history entry. */
@@ -155,6 +229,7 @@ class DrawingViewModel(
             document.objects.add(obj)
             history.push(obj)
             revision++
+            rememberUsedColor(obj)
             log("pending commit objects=${document.objects.size} undo=${history.undoCount}")
         }
         scheduleSave()
@@ -165,6 +240,7 @@ class DrawingViewModel(
             document.objects.add(obj)
             history.push(obj)
             revision++
+            rememberUsedColor(obj)
         }
         scheduleSave()
     }
@@ -206,7 +282,8 @@ class DrawingViewModel(
                 log(
                     "save onStop objects=${snapshot.objects.size} undo=${snapshot.undoCount} redo=${snapshot.redo.size} " +
                         "shape=${snapshot.shapeKind} constrain=${snapshot.shapeConstrain} filled=${snapshot.shapeFilled} " +
-                        "pending=${snapshot.pending != null}",
+                        "pending=${snapshot.pending != null} stroke=${ColorMath.toHex(snapshot.colors.stroke)} " +
+                        "fill=${ColorMath.toHex(snapshot.colors.fill)} recent=${snapshot.colors.recent.size}",
                 )
             }
         }
@@ -261,8 +338,38 @@ class DrawingViewModel(
         shapeKind = savedShapeKind(fromFile?.shapeKind) ?: ShapeKind.RECTANGLE
         shapeConstrain = savedState.get<Boolean>(KEY_SHAPE_CONSTRAIN) ?: fromFile?.shapeConstrain ?: false
         shapeFilled = savedState.get<Boolean>(KEY_SHAPE_FILLED) ?: fromFile?.shapeFilled ?: false
+        colorSettings = savedColors(fromFile?.colors)
+        eyedropperActive = false
+        toolBeforeEyedropper = null
+        colorTarget = ColorTarget.STROKE
         writeSettings()
-        log("settings tool=$tool shape=$shapeKind constrain=$shapeConstrain filled=$shapeFilled snap=$lineSnapEnabled")
+        log(
+            "settings tool=$tool shape=$shapeKind constrain=$shapeConstrain filled=$shapeFilled snap=$lineSnapEnabled " +
+                "stroke=${ColorMath.toHex(colorSettings.stroke)} fill=${ColorMath.toHex(colorSettings.fill)} " +
+                "recent=${colorSettings.recent.size}",
+        )
+    }
+
+    private fun savedColors(fallback: ColorSettings?): ColorSettings {
+        val stroke = savedState.get<Int>(KEY_STROKE_COLOR)
+        val fill = savedState.get<Int>(KEY_FILL_COLOR)
+        val recent = savedState.get<IntArray>(KEY_RECENT_COLORS)
+        if (stroke == null && fill == null && recent == null) {
+            return (fallback ?: ColorSettings()).let { colors ->
+                ColorSettings(
+                    stroke = opaque(colors.stroke),
+                    fill = opaque(colors.fill),
+                    recent = colors.recent.map(::opaque).take(ColorSettings.MAX_RECENT),
+                )
+            }
+        }
+        return ColorSettings(
+            stroke = opaque(stroke ?: fallback?.stroke ?: ColorSettings.BLACK),
+            fill = opaque(fill ?: fallback?.fill ?: ColorSettings.BLACK),
+            recent = (recent?.toList() ?: fallback?.recent.orEmpty())
+                .map(::opaque)
+                .take(ColorSettings.MAX_RECENT),
+        )
     }
 
     private fun savedShapeKind(fallback: ShapeKind?): ShapeKind? {
@@ -291,6 +398,9 @@ class DrawingViewModel(
         savedState[KEY_SHAPE_KIND] = shapeKind.name
         savedState[KEY_SHAPE_CONSTRAIN] = shapeConstrain
         savedState[KEY_SHAPE_FILLED] = shapeFilled
+        savedState[KEY_STROKE_COLOR] = colorSettings.stroke
+        savedState[KEY_FILL_COLOR] = colorSettings.fill
+        savedState[KEY_RECENT_COLORS] = colorSettings.recent.toIntArray()
     }
 
     private fun scheduleSave() {
@@ -309,7 +419,8 @@ class DrawingViewModel(
                     log(
                     "save objects=${snapshot.objects.size} undo=${snapshot.undoCount} redo=${snapshot.redo.size} " +
                         "shape=${snapshot.shapeKind} constrain=${snapshot.shapeConstrain} filled=${snapshot.shapeFilled} " +
-                        "pending=${snapshot.pending != null}",
+                        "pending=${snapshot.pending != null} stroke=${ColorMath.toHex(snapshot.colors.stroke)} " +
+                        "fill=${ColorMath.toHex(snapshot.colors.fill)} recent=${snapshot.colors.recent.size}",
                     )
                 } catch (e: Exception) {
                     log("save failed ${e.message}")
@@ -335,7 +446,43 @@ class DrawingViewModel(
             shapeConstrain = shapeConstrain,
             shapeFilled = shapeFilled,
             pending = pending,
+            colors = colorSettings,
         )
+    }
+
+    private fun recolorPending() {
+        synchronized(lock) {
+            when (val current = pending) {
+                is DrawObject.Line -> {
+                    val color = opaque(colorSettings.stroke)
+                    if (current.color != color) pending = current.copy(color = color)
+                }
+                is DrawObject.Shape -> {
+                    val color = colorForShape(
+                        colorSettings.stroke,
+                        colorSettings.fill,
+                        current.kind,
+                        current.filled,
+                    )
+                    if (current.color != color) pending = current.copy(color = color)
+                }
+                else -> Unit
+            }
+        }
+    }
+
+    private fun rememberUsedColor(obj: DrawObject) {
+        val color = when (obj) {
+            is DrawObject.Stroke -> obj.color
+            is DrawObject.Line -> obj.color
+            is DrawObject.Shape -> obj.color
+            else -> return
+        }
+        val recent = pushRecent(colorSettings.recent, color)
+        if (recent != colorSettings.recent) {
+            colorSettings = colorSettings.copy(recent = recent)
+            writeSettings()
+        }
     }
 
     private fun describe(obj: DrawObject): String {
@@ -358,6 +505,9 @@ class DrawingViewModel(
         const val KEY_SHAPE_KIND = "shape_kind"
         const val KEY_SHAPE_CONSTRAIN = "shape_constrain"
         const val KEY_SHAPE_FILLED = "shape_filled"
+        const val KEY_STROKE_COLOR = "stroke_color"
+        const val KEY_FILL_COLOR = "fill_color"
+        const val KEY_RECENT_COLORS = "recent_colors"
 
         fun factory(filesDir: File): ViewModelProvider.Factory {
             return object : ViewModelProvider.Factory {

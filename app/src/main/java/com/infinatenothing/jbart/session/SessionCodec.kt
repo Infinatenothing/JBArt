@@ -1,11 +1,13 @@
 package com.infinatenothing.jbart.session
 
 import com.infinatenothing.jbart.model.BrushSettings
+import com.infinatenothing.jbart.model.ColorSettings
 import com.infinatenothing.jbart.model.DrawObject
 import com.infinatenothing.jbart.model.InputType
 import com.infinatenothing.jbart.model.ShapeKind
 import com.infinatenothing.jbart.model.StrokePoint
 import com.infinatenothing.jbart.model.Tool
+import com.infinatenothing.jbart.model.opaque
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -27,6 +29,7 @@ data class SessionSnapshot(
     val shapeConstrain: Boolean = false,
     val shapeFilled: Boolean = false,
     val pending: DrawObject? = null,
+    val colors: ColorSettings = ColorSettings(),
 )
 
 sealed interface SessionLoad {
@@ -47,14 +50,20 @@ sealed interface SessionLoad {
  * A version 1 or 2 shape tag has no payload and is dropped. [SessionSnapshot.undoCount] is then
  * clamped to the remaining object count. Version 1, 2, and 3 files still load, with no pending object
  * and shape rotation of 0.
+ * Version 5 adds the stroke color, fill color, recent count (one byte), and recent colors
+ * after the filled flag and before the object list. Object payloads are unchanged.
+ * A recent count above [ColorSettings.MAX_RECENT] fails the header. Versions 1 to 4 still
+ * load, with black stroke and fill colors and an empty recent list. Object colors already
+ * stored in those files are left as they were.
  * Strokes keep canvas pixels. The file is an autosave, not a user document.
  */
 object SessionCodec {
     const val MAGIC = 0x4A425331
-    const val VERSION = 4
+    const val VERSION = 5
     private const val VERSION_LINE_PAYLOAD = 2
     private const val VERSION_SHAPE_PAYLOAD = 3
     private const val VERSION_SHAPE_ROTATION = 4
+    private const val VERSION_COLORS = 5
 
     var log: (String) -> Unit = {}
 
@@ -80,6 +89,7 @@ object SessionCodec {
             data.writeUTF(snapshot.shapeKind.name)
             data.writeBoolean(snapshot.shapeConstrain)
             data.writeBoolean(snapshot.shapeFilled)
+            writeColors(data, snapshot.colors)
             writeObjects(data, snapshot.objects)
             data.writeInt(snapshot.undoCount)
             writeObjects(data, snapshot.redo)
@@ -121,6 +131,7 @@ object SessionCodec {
             shapeConstrain = false
             shapeFilled = false
         }
+        val colors = if (version >= VERSION_COLORS) readColors(data) else ColorSettings()
         val objects = readObjects(data, version)
         val undoCountRaw = data.readInt()
         val undoCount = if (version >= VERSION_SHAPE_PAYLOAD) {
@@ -147,7 +158,28 @@ object SessionCodec {
                 shapeConstrain = shapeConstrain,
                 shapeFilled = shapeFilled,
                 pending = pending,
+                colors = colors,
             ),
+        )
+    }
+
+    private fun writeColors(data: DataOutputStream, colors: ColorSettings) {
+        data.writeInt(opaque(colors.stroke))
+        data.writeInt(opaque(colors.fill))
+        val recent = colors.recent.take(ColorSettings.MAX_RECENT).map(::opaque)
+        data.writeByte(recent.size)
+        for (color in recent) data.writeInt(color)
+    }
+
+    private fun readColors(data: DataInputStream): ColorSettings {
+        val stroke = opaque(data.readInt())
+        val fill = opaque(data.readInt())
+        val count = data.readUnsignedByte()
+        if (count > ColorSettings.MAX_RECENT) throw EOFException()
+        return ColorSettings(
+            stroke = stroke,
+            fill = fill,
+            recent = List(count) { opaque(data.readInt()) },
         )
     }
 
