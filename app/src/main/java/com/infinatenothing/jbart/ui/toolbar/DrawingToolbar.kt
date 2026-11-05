@@ -80,6 +80,10 @@ fun DrawingToolbar(
     onShapeKind: (ShapeKind) -> Unit,
     onShapeConstrain: (Boolean) -> Unit,
     onShapeFilled: (Boolean) -> Unit,
+    fillTolerance: Int,
+    fillGapDp: Int,
+    onFillTolerance: (Int) -> Unit,
+    onFillGap: (Int) -> Unit,
     settingsTool: Tool?,
     onSelectTool: (Tool) -> Unit,
     onOpenSettings: (Tool) -> Unit,
@@ -141,7 +145,10 @@ fun DrawingToolbar(
             icon = Icons.Filled.FormatColorFill,
             selected = selectedTool == Tool.FILL,
             enabled = true,
-            onClick = { onSelectTool(Tool.FILL) },
+            settingsTool = Tool.FILL,
+            onClick = {
+                if (selectedTool == Tool.FILL) onOpenSettings(Tool.FILL) else onSelectTool(Tool.FILL)
+            },
         ),
         Item(
             tag = "tool_color",
@@ -201,6 +208,10 @@ fun DrawingToolbar(
                         eraserSettings = eraserSettings,
                         onBrushSettings = onBrushSettings,
                         onEraserSettings = onEraserSettings,
+                        fillTolerance = fillTolerance,
+                        fillGapDp = fillGapDp,
+                        onFillTolerance = onFillTolerance,
+                        onFillGap = onFillGap,
                         onDismiss = onDismissSettings,
                     )
                 }
@@ -261,6 +272,10 @@ private fun SettingsPopup(
     eraserSettings: BrushSettings,
     onBrushSettings: (BrushSettings) -> Unit,
     onEraserSettings: (BrushSettings) -> Unit,
+    fillTolerance: Int,
+    fillGapDp: Int,
+    onFillTolerance: (Int) -> Unit,
+    onFillGap: (Int) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val density = LocalDensity.current
@@ -273,12 +288,22 @@ private fun SettingsPopup(
         onDismissRequest = onDismiss,
         properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = true),
     ) {
-        BrushSettingsPanel(
-            tool = tool,
-            settings = if (eraser) eraserSettings else brushSettings,
-            onSettings = if (eraser) onEraserSettings else onBrushSettings,
-            modifier = Modifier.width(280.dp),
-        )
+        if (tool == Tool.FILL) {
+            FillSettingsPanel(
+                tolerance = fillTolerance,
+                gapDp = fillGapDp,
+                onTolerance = onFillTolerance,
+                onGap = onFillGap,
+                modifier = Modifier.width(280.dp),
+            )
+        } else {
+            BrushSettingsPanel(
+                tool = tool,
+                settings = if (eraser) eraserSettings else brushSettings,
+                onSettings = if (eraser) onEraserSettings else onBrushSettings,
+                modifier = Modifier.width(280.dp),
+            )
+        }
     }
 }
 

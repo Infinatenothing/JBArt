@@ -3,7 +3,6 @@ package com.infinatenothing.jbart
 import com.infinatenothing.jbart.canvas.InputRouting
 import com.infinatenothing.jbart.model.Tool
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Test
 
 class InputRoutingTest {
@@ -69,9 +68,17 @@ class InputRoutingTest {
     }
 
     @Test
-    fun fillDoesNotDraw() {
-        assertNull(InputRouting.toolForEvent(Tool.FILL, InputRouting.TOOL_TYPE_STYLUS, 0))
-        assertNull(InputRouting.toolForEvent(Tool.FILL, InputRouting.TOOL_TYPE_FINGER, 0))
-        assertNull(InputRouting.toolForEvent(Tool.FILL, InputRouting.TOOL_TYPE_MOUSE, 0))
+    fun fillRoutesFingerStylusAndMouseToFill() {
+        assertEquals(Tool.FILL, InputRouting.toolForEvent(Tool.FILL, InputRouting.TOOL_TYPE_STYLUS, 0))
+        assertEquals(Tool.FILL, InputRouting.toolForEvent(Tool.FILL, InputRouting.TOOL_TYPE_FINGER, 0))
+        assertEquals(Tool.FILL, InputRouting.toolForEvent(Tool.FILL, InputRouting.TOOL_TYPE_MOUSE, 0))
+        assertEquals(
+            Tool.ERASER,
+            InputRouting.toolForEvent(Tool.FILL, InputRouting.TOOL_TYPE_ERASER, 0),
+        )
+        assertEquals(
+            Tool.ERASER,
+            InputRouting.toolForEvent(Tool.FILL, InputRouting.TOOL_TYPE_STYLUS, InputRouting.BUTTON_STYLUS_PRIMARY),
+        )
     }
 }

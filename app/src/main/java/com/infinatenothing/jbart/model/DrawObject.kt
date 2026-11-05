@@ -57,5 +57,51 @@ sealed interface DrawObject {
         override val tool: Tool = Tool.SHAPE,
     ) : DrawObject
 
-    data class Fill(override val tool: Tool = Tool.FILL) : DrawObject
+    /**
+     * One flood fill. [runs] is the region at the time of the tap, as triples
+     * (y, xStart, length), rows ascending and runs within a row non-overlapping.
+     * Replay paints [runs] and does not look at [gapPx]. [width] and [height] are
+     * the ink bitmap size when the fill was made.
+     */
+    data class Fill(
+        val seedX: Int,
+        val seedY: Int,
+        val color: Int,
+        val alpha: Float,
+        val tolerance: Int,
+        val gapPx: Int,
+        val width: Int,
+        val height: Int,
+        val runs: IntArray,
+        override val tool: Tool = Tool.FILL,
+    ) : DrawObject {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is Fill) return false
+            return seedX == other.seedX &&
+                seedY == other.seedY &&
+                color == other.color &&
+                alpha == other.alpha &&
+                tolerance == other.tolerance &&
+                gapPx == other.gapPx &&
+                width == other.width &&
+                height == other.height &&
+                tool == other.tool &&
+                runs.contentEquals(other.runs)
+        }
+
+        override fun hashCode(): Int {
+            var result = seedX
+            result = 31 * result + seedY
+            result = 31 * result + color
+            result = 31 * result + alpha.hashCode()
+            result = 31 * result + tolerance
+            result = 31 * result + gapPx
+            result = 31 * result + width
+            result = 31 * result + height
+            result = 31 * result + tool.hashCode()
+            result = 31 * result + runs.contentHashCode()
+            return result
+        }
+    }
 }

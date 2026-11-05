@@ -64,6 +64,12 @@ class DrawingViewModel(
         private set
     var eyedropperActive by mutableStateOf(false)
         private set
+    var fillTolerance by mutableIntStateOf(32)
+        private set
+    var fillGapDp by mutableIntStateOf(2)
+        private set
+    var fillBusy by mutableStateOf(false)
+        private set
     var pending by mutableStateOf<DrawObject?>(null)
         private set
     var revision by mutableIntStateOf(0)
@@ -74,6 +80,7 @@ class DrawingViewModel(
     private val lock = Any()
     private val saveLock = Any()
     private var toolBeforeEyedropper: Tool? = null
+    var cancelInFlightFill: (() -> Unit)? = null
 
     init {
         history.onTrimmed = { dropped ->
@@ -160,6 +167,29 @@ class DrawingViewModel(
         log("color stroke=${ColorMath.toHex(next)}")
     }
 
+    fun updateFillTolerance(value: Int) {
+        val next = value.coerceIn(0, 255)
+        if (fillTolerance == next) return
+        fillTolerance = next
+        writeSettings()
+        scheduleSave()
+        log("fill tolerance=$next")
+    }
+
+    fun updateFillGap(value: Int) {
+        val next = value.coerceIn(0, 10)
+        if (fillGapDp == next) return
+        fillGapDp = next
+        writeSettings()
+        scheduleSave()
+        log("fill gapDp=$next")
+    }
+
+    fun setFillRunning(busy: Boolean) {
+        if (fillBusy == busy) return
+        fillBusy = busy
+    }
+
     fun updateFillColor(color: Int) {
         val next = opaque(color)
         if (colorSettings.fill == next) return
@@ -237,6 +267,16 @@ class DrawingViewModel(
 
     fun commit(obj: DrawObject) {
         synchronized(lock) {
+            if (obj is DrawObject.Fill) {
+                val staged = pending
+                if (staged != null) {
+                    pending = null
+                    document.objects.add(staged)
+                    history.push(staged)
+                    rememberUsedColor(staged)
+                    log("pending commit before fill")
+                }
+            }
             document.objects.add(obj)
             history.push(obj)
             revision++
@@ -246,6 +286,7 @@ class DrawingViewModel(
     }
 
     fun undo() {
+        if (fillBusy) return
         synchronized(lock) {
             if (pending != null) {
                 pending = null
@@ -262,6 +303,7 @@ class DrawingViewModel(
     }
 
     fun redo() {
+        if (fillBusy) return
         if (pending != null) commitPending()
         synchronized(lock) {
             val entry = history.redo() ?: return
@@ -272,6 +314,7 @@ class DrawingViewModel(
     }
 
     fun onHostStop() {
+        cancelInFlightFill?.invoke()
         val snapshot = synchronized(lock) {
             saveGeneration++
             captureLocked()
@@ -283,7 +326,8 @@ class DrawingViewModel(
                     "save onStop objects=${snapshot.objects.size} undo=${snapshot.undoCount} redo=${snapshot.redo.size} " +
                         "shape=${snapshot.shapeKind} constrain=${snapshot.shapeConstrain} filled=${snapshot.shapeFilled} " +
                         "pending=${snapshot.pending != null} stroke=${ColorMath.toHex(snapshot.colors.stroke)} " +
-                        "fill=${ColorMath.toHex(snapshot.colors.fill)} recent=${snapshot.colors.recent.size}",
+                        "fill=${ColorMath.toHex(snapshot.colors.fill)} recent=${snapshot.colors.recent.size} " +
+                        "tolerance=${snapshot.fillTolerance} gapDp=${snapshot.fillGapDp}",
                 )
             }
         }
@@ -323,7 +367,7 @@ class DrawingViewModel(
                 log(
                     "restore objects=${snap.objects.size} undo=${history.undoCount} redo=${history.redoCount} " +
                         "shape=${snap.shapeKind} constrain=${snap.shapeConstrain} filled=${snap.shapeFilled} " +
-                        "pending=${snap.pending != null}",
+                        "pending=${snap.pending != null} tolerance=${snap.fillTolerance} gapDp=${snap.fillGapDp}",
                 )
                 snap
             }
@@ -339,6 +383,9 @@ class DrawingViewModel(
         shapeConstrain = savedState.get<Boolean>(KEY_SHAPE_CONSTRAIN) ?: fromFile?.shapeConstrain ?: false
         shapeFilled = savedState.get<Boolean>(KEY_SHAPE_FILLED) ?: fromFile?.shapeFilled ?: false
         colorSettings = savedColors(fromFile?.colors)
+        fillTolerance = (savedState.get<Int>(KEY_FILL_TOLERANCE) ?: fromFile?.fillTolerance ?: 32).coerceIn(0, 255)
+        fillGapDp = (savedState.get<Int>(KEY_FILL_GAP) ?: fromFile?.fillGapDp ?: 2).coerceIn(0, 10)
+        fillBusy = false
         eyedropperActive = false
         toolBeforeEyedropper = null
         colorTarget = ColorTarget.STROKE
@@ -346,7 +393,7 @@ class DrawingViewModel(
         log(
             "settings tool=$tool shape=$shapeKind constrain=$shapeConstrain filled=$shapeFilled snap=$lineSnapEnabled " +
                 "stroke=${ColorMath.toHex(colorSettings.stroke)} fill=${ColorMath.toHex(colorSettings.fill)} " +
-                "recent=${colorSettings.recent.size}",
+                "recent=${colorSettings.recent.size} tolerance=$fillTolerance gapDp=$fillGapDp",
         )
     }
 
@@ -401,6 +448,8 @@ class DrawingViewModel(
         savedState[KEY_STROKE_COLOR] = colorSettings.stroke
         savedState[KEY_FILL_COLOR] = colorSettings.fill
         savedState[KEY_RECENT_COLORS] = colorSettings.recent.toIntArray()
+        savedState[KEY_FILL_TOLERANCE] = fillTolerance
+        savedState[KEY_FILL_GAP] = fillGapDp
     }
 
     private fun scheduleSave() {
@@ -420,7 +469,8 @@ class DrawingViewModel(
                     "save objects=${snapshot.objects.size} undo=${snapshot.undoCount} redo=${snapshot.redo.size} " +
                         "shape=${snapshot.shapeKind} constrain=${snapshot.shapeConstrain} filled=${snapshot.shapeFilled} " +
                         "pending=${snapshot.pending != null} stroke=${ColorMath.toHex(snapshot.colors.stroke)} " +
-                        "fill=${ColorMath.toHex(snapshot.colors.fill)} recent=${snapshot.colors.recent.size}",
+                        "fill=${ColorMath.toHex(snapshot.colors.fill)} recent=${snapshot.colors.recent.size} " +
+                        "tolerance=${snapshot.fillTolerance} gapDp=${snapshot.fillGapDp}",
                     )
                 } catch (e: Exception) {
                     log("save failed ${e.message}")
@@ -447,6 +497,8 @@ class DrawingViewModel(
             shapeFilled = shapeFilled,
             pending = pending,
             colors = colorSettings,
+            fillTolerance = fillTolerance,
+            fillGapDp = fillGapDp,
         )
     }
 
@@ -476,6 +528,7 @@ class DrawingViewModel(
             is DrawObject.Stroke -> obj.color
             is DrawObject.Line -> obj.color
             is DrawObject.Shape -> obj.color
+            is DrawObject.Fill -> obj.color
             else -> return
         }
         val recent = pushRecent(colorSettings.recent, color)
@@ -508,6 +561,8 @@ class DrawingViewModel(
         const val KEY_STROKE_COLOR = "stroke_color"
         const val KEY_FILL_COLOR = "fill_color"
         const val KEY_RECENT_COLORS = "recent_colors"
+        const val KEY_FILL_TOLERANCE = "fill_tolerance"
+        const val KEY_FILL_GAP = "fill_gap"
 
         fun factory(filesDir: File): ViewModelProvider.Factory {
             return object : ViewModelProvider.Factory {

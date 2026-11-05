@@ -6,4 +6,7 @@ object HistoryLimits {
 
     /** A few huge strokes cannot pin the undo stack in memory. The drawing itself is kept. */
     const val MAX_POINTS = 200_000
+
+    /** Above this many row runs the fill is dropped instead of stored. */
+    const val MAX_FILL_RUNS = 150_000
 }
