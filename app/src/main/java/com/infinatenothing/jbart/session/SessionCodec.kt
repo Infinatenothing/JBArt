@@ -3,6 +3,7 @@ package com.infinatenothing.jbart.session
 import com.infinatenothing.jbart.model.BrushSettings
 import com.infinatenothing.jbart.model.ColorSettings
 import com.infinatenothing.jbart.model.DrawObject
+import com.infinatenothing.jbart.model.HistoryLimits
 import com.infinatenothing.jbart.model.InputType
 import com.infinatenothing.jbart.model.ShapeKind
 import com.infinatenothing.jbart.model.StrokePoint
@@ -30,6 +31,8 @@ data class SessionSnapshot(
     val shapeFilled: Boolean = false,
     val pending: DrawObject? = null,
     val colors: ColorSettings = ColorSettings(),
+    val fillTolerance: Int = 32,
+    val fillGapDp: Int = 2,
 )
 
 sealed interface SessionLoad {
@@ -55,15 +58,22 @@ sealed interface SessionLoad {
  * A recent count above [ColorSettings.MAX_RECENT] fails the header. Versions 1 to 4 still
  * load, with black stroke and fill colors and an empty recent list. Object colors already
  * stored in those files are left as they were.
+ * Version 6 writes fill tolerance and the close-gaps setting (dp) after the color block,
+ * and a full [DrawObject.Fill] payload: seed, color, alpha, tolerance, gap px, bitmap size,
+ * run count, then runs. Versions 1 to 5 still load. Their fill tag has no payload and is
+ * dropped, and [SessionSnapshot.undoCount] is clamped to the objects that remain.
+ * Tolerance defaults to 32 and the gap setting to 2. A run count above
+ * [HistoryLimits.MAX_FILL_RUNS] fails the file. Runs out of order drop that fill only.
  * Strokes keep canvas pixels. The file is an autosave, not a user document.
  */
 object SessionCodec {
     const val MAGIC = 0x4A425331
-    const val VERSION = 5
+    const val VERSION = 6
     private const val VERSION_LINE_PAYLOAD = 2
     private const val VERSION_SHAPE_PAYLOAD = 3
     private const val VERSION_SHAPE_ROTATION = 4
     private const val VERSION_COLORS = 5
+    private const val VERSION_FILL = 6
 
     var log: (String) -> Unit = {}
 
@@ -90,6 +100,8 @@ object SessionCodec {
             data.writeBoolean(snapshot.shapeConstrain)
             data.writeBoolean(snapshot.shapeFilled)
             writeColors(data, snapshot.colors)
+            data.writeInt(snapshot.fillTolerance.coerceIn(0, 255))
+            data.writeInt(snapshot.fillGapDp.coerceIn(0, 10))
             writeObjects(data, snapshot.objects)
             data.writeInt(snapshot.undoCount)
             writeObjects(data, snapshot.redo)
@@ -132,9 +144,18 @@ object SessionCodec {
             shapeFilled = false
         }
         val colors = if (version >= VERSION_COLORS) readColors(data) else ColorSettings()
+        val fillTolerance: Int
+        val fillGapDp: Int
+        if (version >= VERSION_FILL) {
+            fillTolerance = data.readInt().coerceIn(0, 255)
+            fillGapDp = data.readInt().coerceIn(0, 10)
+        } else {
+            fillTolerance = 32
+            fillGapDp = 2
+        }
         val objects = readObjects(data, version)
         val undoCountRaw = data.readInt()
-        val undoCount = if (version >= VERSION_SHAPE_PAYLOAD) {
+        val undoCount = if (version >= VERSION_FILL) {
             undoCountRaw
         } else {
             undoCountRaw.coerceIn(0, objects.size)
@@ -159,6 +180,8 @@ object SessionCodec {
                 shapeFilled = shapeFilled,
                 pending = pending,
                 colors = colors,
+                fillTolerance = fillTolerance,
+                fillGapDp = fillGapDp,
             ),
         )
     }
@@ -249,7 +272,20 @@ object SessionCodec {
                 data.writeUTF(obj.inputType.name)
                 data.writeFloat(obj.rotationDeg)
             }
-            is DrawObject.Fill -> data.writeByte(FILL)
+            is DrawObject.Fill -> {
+                data.writeByte(FILL)
+                data.writeInt(obj.seedX)
+                data.writeInt(obj.seedY)
+                data.writeInt(obj.color)
+                data.writeFloat(obj.alpha)
+                data.writeInt(obj.tolerance)
+                data.writeInt(obj.gapPx)
+                data.writeInt(obj.width)
+                data.writeInt(obj.height)
+                val count = obj.runs.size / 3
+                data.writeInt(count)
+                for (i in 0 until count * 3) data.writeInt(obj.runs[i])
+            }
         }
     }
 
@@ -331,9 +367,56 @@ object SessionCodec {
             } else {
                 null
             }
-            FILL -> DrawObject.Fill()
+            FILL -> if (version >= VERSION_FILL) readFill(data) else null
             else -> throw EOFException()
         }
+    }
+
+    private fun readFill(data: DataInputStream): DrawObject.Fill? {
+        val seedX = data.readInt()
+        val seedY = data.readInt()
+        val color = data.readInt()
+        val alpha = data.readFloat()
+        val tolerance = data.readInt()
+        val gapPx = data.readInt()
+        val width = data.readInt()
+        val height = data.readInt()
+        val count = data.readInt()
+        if (count < 0 || count > HistoryLimits.MAX_FILL_RUNS) throw EOFException()
+        val runs = IntArray(count * 3)
+        for (i in runs.indices) runs[i] = data.readInt()
+        if (!runsInOrder(runs)) {
+            log("fill dropped runs=$count")
+            return null
+        }
+        return DrawObject.Fill(
+            seedX = seedX,
+            seedY = seedY,
+            color = color,
+            alpha = alpha,
+            tolerance = tolerance,
+            gapPx = gapPx,
+            width = width,
+            height = height,
+            runs = runs,
+        )
+    }
+
+    private fun runsInOrder(runs: IntArray): Boolean {
+        var previousY = Int.MIN_VALUE
+        var previousEnd = 0
+        var index = 0
+        while (index < runs.size) {
+            val y = runs[index]
+            val x = runs[index + 1]
+            val length = runs[index + 2]
+            if (length <= 0 || y < previousY) return false
+            if (y == previousY && x < previousEnd) return false
+            previousY = y
+            previousEnd = x + length
+            index += 3
+        }
+        return true
     }
 
     private fun writePoints(data: DataOutputStream, points: List<StrokePoint>) {

@@ -12,9 +12,14 @@ import android.graphics.PorterDuffXfermode
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Xfermode
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
+import android.widget.Toast
+import com.infinatenothing.jbart.R
 import com.infinatenothing.jbart.model.BrushSettings
 import com.infinatenothing.jbart.model.ColorMath
 import com.infinatenothing.jbart.model.DrawObject
@@ -27,6 +32,7 @@ import com.infinatenothing.jbart.model.Tool
 import com.infinatenothing.jbart.model.clampBrushSettings
 import com.infinatenothing.jbart.model.colorForShape
 import com.infinatenothing.jbart.model.opaque
+import java.util.concurrent.Executors
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
@@ -126,6 +132,9 @@ class DrawingView(context: Context) : View(context) {
     var eyedropperTarget: String = "stroke"
     var onEyedropperPick: (Int) -> Unit = {}
     var onEyedropperCancel: () -> Unit = {}
+    var fillTolerance: Int = 32
+    var fillGapDp: Int = 2
+    var onFillBusy: (Boolean) -> Unit = {}
 
     private var ink: Bitmap? = null
     private var inkCanvas: Canvas? = null
@@ -220,6 +229,22 @@ class DrawingView(context: Context) : View(context) {
         style = Paint.Style.STROKE
         color = Color.BLACK
     }
+    private val fillPaint = Paint().apply {
+        style = Paint.Style.FILL
+        isAntiAlias = false
+        isDither = false
+    }
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val fillExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "jbart-fill").apply { isDaemon = true }
+    }
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
+    private var fillGeneration = 0
+    private var fillInFlight = false
+    private var fillTracking = false
+    private var fillMoved = false
+    private var fillStartX = 0f
+    private var fillStartY = 0f
 
     init {
         setWillNotDraw(false)
@@ -230,6 +255,7 @@ class DrawingView(context: Context) : View(context) {
         check(MotionEvent.TOOL_TYPE_ERASER == InputRouting.TOOL_TYPE_ERASER)
         check(MotionEvent.BUTTON_STYLUS_PRIMARY == InputRouting.BUTTON_STYLUS_PRIMARY)
         check(MotionEvent.BUTTON_STYLUS_SECONDARY == InputRouting.BUTTON_STYLUS_SECONDARY)
+        FloodFill.log = { message -> Log.d(TAG, message) }
         labelPaint.textSize = 12f * resources.displayMetrics.density
         loupeTextPaint.textSize = 12f * resources.displayMetrics.density
         handleLinePaint.strokeWidth = dp(1.5f)
@@ -239,6 +265,7 @@ class DrawingView(context: Context) : View(context) {
         if (w <= 0 || h <= 0) return
         val existing = ink
         if (existing != null && existing.width == w && existing.height == h && scratch != null) return
+        cancelOutstandingFill()
         existing?.recycle()
         scratch?.recycle()
         val created = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
@@ -325,7 +352,7 @@ class DrawingView(context: Context) : View(context) {
                 is DrawObject.EraseStroke -> stampErase(obj.points, obj.baseWidthPx, obj.inputType)
                 is DrawObject.Line -> stampLine(obj.x1, obj.y1, obj.x2, obj.y2, obj.color, obj.widthPx, obj.alpha)
                 is DrawObject.Shape -> stampShape(obj)
-                is DrawObject.Fill -> Unit
+                is DrawObject.Fill -> stampFill(obj)
             }
         }
         clearScratch()
@@ -418,7 +445,30 @@ class DrawingView(context: Context) : View(context) {
         onEyedropperCancel()
     }
 
+    fun cancelOutstandingFill() {
+        val busy = fillInFlight || fillTracking
+        fillGeneration++
+        fillTracking = false
+        fillMoved = false
+        fillInFlight = false
+        if (activeDrawTool == Tool.FILL || busy) {
+            stylusActive = false
+            activePointerId = MotionEvent.INVALID_POINTER_ID
+        }
+        if (busy) {
+            onFillBusy(false)
+            Log.d(TAG, "fill cancelled")
+        }
+    }
+
+    override fun onDetachedFromWindow() {
+        cancelOutstandingFill()
+        fillExecutor.shutdownNow()
+        super.onDetachedFromWindow()
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (fillInFlight) return true
         if (eyedropperActive) {
             logEvent(event)
             if (event.actionMasked == MotionEvent.ACTION_DOWN) {
@@ -448,7 +498,13 @@ class DrawingView(context: Context) : View(context) {
                 }
             }
             MotionEvent.ACTION_CANCEL -> {
-                if (pendingDrag) cancelPendingDrag() else discardActive()
+                if (fillTracking) {
+                    endFillTrack()
+                } else if (pendingDrag) {
+                    cancelPendingDrag()
+                } else {
+                    discardActive()
+                }
             }
         }
         return true
@@ -458,6 +514,10 @@ class DrawingView(context: Context) : View(context) {
         if (pendingDrag) cancelPendingDrag()
         if (drawing) discardActive()
         val routed = InputRouting.toolForEvent(tool, event.getToolType(0), event.buttonState)
+        if (routed == Tool.FILL) {
+            beginFillTrack(event)
+            return
+        }
         if (routed == null) return
         if (pendingShape != null && (routed == Tool.ERASER || tool != Tool.SHAPE)) {
             Log.d(TAG, "pending commit routed=$routed")
@@ -518,6 +578,12 @@ class DrawingView(context: Context) : View(context) {
         if (ignoredPointer(event, index)) return
         val x = event.getX(index)
         val y = event.getY(index)
+        if (fillTracking) {
+            if (!ignoredPointer(event, index) && hypot(x - fillStartX, y - fillStartY) > touchSlop) {
+                fillMoved = true
+            }
+            return
+        }
         when {
             pendingDrag -> updatePendingDrag(x, y)
             !drawing -> Unit
@@ -529,11 +595,140 @@ class DrawingView(context: Context) : View(context) {
 
     private fun finishPointer(event: MotionEvent) {
         when {
+            fillTracking -> finishFillTap(event)
             pendingDrag -> finishPendingDrag(event)
             !drawing -> Unit
             activeDrawTool == Tool.LINE -> commitLine(event)
             activeDrawTool == Tool.SHAPE -> finishShape(event)
             else -> commitStroke(event)
+        }
+    }
+
+    private fun beginFillTrack(event: MotionEvent) {
+        val toolType = event.getToolType(0)
+        activePointerId = event.getPointerId(0)
+        inputType = inputTypeOf(toolType)
+        stylusActive = toolType == MotionEvent.TOOL_TYPE_STYLUS || toolType == MotionEvent.TOOL_TYPE_ERASER
+        fillTracking = true
+        fillMoved = false
+        fillStartX = event.getX(0)
+        fillStartY = event.getY(0)
+    }
+
+    private fun finishFillTap(event: MotionEvent) {
+        val index = event.findPointerIndex(activePointerId)
+        val moved = fillMoved
+        val startX = fillStartX
+        val startY = fillStartY
+        val ignorePalm = index >= 0 && ignoredPointer(event, index)
+        endFillTrack()
+        if (index < 0 || ignorePalm) return
+        val x = event.getX(index)
+        val y = event.getY(index)
+        if (moved || hypot(x - startX, y - startY) > touchSlop) {
+            Log.d(TAG, "fill drag ignored")
+            return
+        }
+        if (pendingShape != null || pendingLine != null) {
+            commitPendingOnly()
+        }
+        startFill(startX, startY)
+    }
+
+    private fun endFillTrack() {
+        fillTracking = false
+        fillMoved = false
+        stylusActive = false
+        activePointerId = MotionEvent.INVALID_POINTER_ID
+    }
+
+    private fun startFill(x: Float, y: Float) {
+        val bitmap = ink ?: return
+        val widthPx = bitmap.width
+        val heightPx = bitmap.height
+        if (widthPx <= 0 || heightPx <= 0) return
+        val coords = eyedropperOut
+        EyedropperMath.toBitmapCoords(x, y, width, height, widthPx, heightPx, coords)
+        val seedX = coords[0].roundToInt().coerceIn(0, widthPx - 1)
+        val seedY = coords[1].roundToInt().coerceIn(0, heightPx - 1)
+        val pixels = IntArray(widthPx * heightPx)
+        bitmap.getPixels(pixels, 0, widthPx, 0, 0, widthPx, heightPx)
+        val background = document?.backgroundColor ?: Color.WHITE
+        val tolerance = fillTolerance.coerceIn(0, 255)
+        val gapPx = (fillGapDp * resources.displayMetrics.density).roundToInt().coerceIn(0, 32)
+        val color = opaque(fillColor)
+        val generation = ++fillGeneration
+        fillInFlight = true
+        onFillBusy(true)
+        Log.d(TAG, "fill start seed=$seedX,$seedY tolerance=$tolerance gapPx=$gapPx color=${ColorMath.toHex(color)}")
+        val started = System.nanoTime()
+        try {
+            fillExecutor.execute {
+                var tooComplex = false
+                val runs = try {
+                    FloodFill.floodFill(
+                        pixels = pixels,
+                        w = widthPx,
+                        h = heightPx,
+                        seedX = seedX,
+                        seedY = seedY,
+                        background = background,
+                        fillColor = color,
+                        tolerance = tolerance,
+                        gapPx = gapPx,
+                        expandEdge = true,
+                        report = {
+                            tooComplex = true
+                            Log.d(TAG, it)
+                        },
+                    )
+                } catch (e: Exception) {
+                    Log.d(TAG, "fill failed ${e.message}")
+                    null
+                }
+                val elapsedMs = (System.nanoTime() - started) / 1_000_000L
+                val runCount = if (runs == null) 0 else runs.size / 3
+                mainHandler.post {
+                    if (generation != fillGeneration || !isAttachedToWindow) {
+                        Log.d(TAG, "fill dropped runs=$runCount ms=$elapsedMs")
+                        if (generation == fillGeneration && fillInFlight) {
+                            fillInFlight = false
+                            onFillBusy(false)
+                        }
+                        return@post
+                    }
+                    fillInFlight = false
+                    onFillBusy(false)
+                    if (runs == null) {
+                        if (tooComplex) {
+                            Toast.makeText(context, R.string.fill_too_complex, Toast.LENGTH_SHORT).show()
+                        }
+                        Log.d(TAG, "fill none ms=$elapsedMs tolerance=$tolerance gapPx=$gapPx")
+                        return@post
+                    }
+                    val fill = DrawObject.Fill(
+                        seedX = seedX,
+                        seedY = seedY,
+                        color = color,
+                        alpha = 1f,
+                        tolerance = tolerance,
+                        gapPx = gapPx,
+                        width = widthPx,
+                        height = heightPx,
+                        runs = runs,
+                    )
+                    stampFill(fill)
+                    onCommit(fill)
+                    Log.d(
+                        TAG,
+                        "fill commit runs=$runCount ms=$elapsedMs tolerance=$tolerance gapPx=$gapPx",
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            fillInFlight = false
+            onFillBusy(false)
+            Log.d(TAG, "fill rejected ${e.message}")
         }
     }
 
@@ -1021,6 +1216,28 @@ class DrawingView(context: Context) : View(context) {
         ShapeGeometry.boundsInto(kind, x1, y1, x2, y2, filled, width, minArrowHeadPx(), shapeBounds)
         invalidateBounds(shapeBounds)
         Log.d(TAG, "shape cancel kind=$kind constrain=$shapeConstrain filled=$shapeFilled")
+    }
+
+    private fun stampFill(fill: DrawObject.Fill) {
+        val canvas = inkCanvas ?: return
+        val bitmap = ink ?: return
+        fillPaint.xfermode = null
+        fillPaint.color = fill.color
+        fillPaint.alpha = alphaByte(fill.alpha)
+        val runs = fill.runs
+        var index = 0
+        while (index + 2 < runs.size) {
+            val y = runs[index]
+            var x = runs[index + 1]
+            val length = runs[index + 2]
+            index += 3
+            if (y < 0 || y >= bitmap.height || length <= 0) continue
+            var end = x + length
+            if (x < 0) x = 0
+            if (end > bitmap.width) end = bitmap.width
+            if (x >= end) continue
+            canvas.drawRect(x.toFloat(), y.toFloat(), end.toFloat(), (y + 1).toFloat(), fillPaint)
+        }
     }
 
     private fun stampShape(obj: DrawObject.Shape) {

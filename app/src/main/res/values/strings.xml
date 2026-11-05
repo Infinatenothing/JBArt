@@ -36,6 +36,13 @@
     <string name="action_undo">Undo</string>
     <string name="action_redo">Redo</string>
     <string name="action_export">Export</string>
+    <string name="settings_fill">Fill</string>
+    <string name="fill_tolerance">Tolerance %1$d</string>
+    <string name="fill_gap_off">Off</string>
+    <string name="fill_gap_value">%1$d dp</string>
+    <string name="fill_gap_hint">Closes gaps up to about twice this size</string>
+    <string name="fill_too_complex">Area too complex to fill</string>
+    <string name="fill_busy">Filling</string>
     <string name="settings_brush">Brush</string>
     <string name="settings_eraser">Eraser</string>
     <string name="settings_size">Size %1$.1f dp</string>

@@ -379,6 +379,109 @@ class SessionCodecTest {
     }
 
     @Test
+    fun version6RoundTripKeepsFillsToleranceAndGap() {
+        val fill = DrawObject.Fill(
+            seedX = 3,
+            seedY = 4,
+            color = ColorSettings.RED,
+            alpha = 1f,
+            tolerance = 32,
+            gapPx = 5,
+            width = 12,
+            height = 9,
+            runs = intArrayOf(1, 0, 4, 1, 6, 2, 2, 0, 3),
+        )
+        val snapshot = SessionSnapshot(
+            width = 12,
+            height = 9,
+            backgroundColor = 0xFFFFFFFF.toInt(),
+            objects = listOf(stroke(1f), fill, shape(ShapeKind.ELLIPSE, filled = false, x = 2f)),
+            undoCount = 2,
+            redo = listOf(fill.copy(seedX = 1)),
+            tool = Tool.FILL,
+            brush = BrushSettings(),
+            eraser = BrushSettings(),
+            pending = line(),
+            colors = ColorSettings(stroke = ColorSettings.RED, fill = ColorSettings.BLUE),
+            fillTolerance = 40,
+            fillGapDp = 2,
+        )
+        val loaded = (SessionCodec.decode(SessionCodec.encode(snapshot)) as SessionLoad.Ok).snapshot
+        assertEquals(snapshot, loaded)
+        val restored = loaded.objects[1] as DrawObject.Fill
+        assertTrue(restored.runs.contentEquals(fill.runs))
+        assertEquals(5, restored.gapPx)
+        assertEquals(40, loaded.fillTolerance)
+        assertEquals(2, loaded.fillGapDp)
+    }
+
+    @Test
+    fun olderVersionsDropPlaceholderFillsAndKeepUndoConsistent() {
+        for (version in 1..5) {
+            val bytes = legacyWithFill(version)
+            val decoded = SessionCodec.decode(bytes)
+            assertTrue("version $version", decoded is SessionLoad.Ok)
+            val snapshot = (decoded as SessionLoad.Ok).snapshot
+            assertTrue(snapshot.objects.none { it is DrawObject.Fill })
+            assertTrue(snapshot.undoCount <= snapshot.objects.size)
+            assertEquals(32, snapshot.fillTolerance)
+            assertEquals(2, snapshot.fillGapDp)
+        }
+    }
+
+    @Test
+    fun fillRunCountAboveTheCapFailsAndOutOfOrderDropsThatFill() {
+        val tooMany = ByteArrayOutputStream().also { out ->
+            DataOutputStream(out).use { data ->
+                writeV6Header(data)
+                data.writeInt(1)
+                data.writeByte(5)
+                data.writeInt(0)
+                data.writeInt(0)
+                data.writeInt(ColorSettings.RED)
+                data.writeFloat(1f)
+                data.writeInt(32)
+                data.writeInt(0)
+                data.writeInt(4)
+                data.writeInt(4)
+                data.writeInt(150_001)
+                data.writeInt(0)
+                data.writeInt(0)
+            }
+        }.toByteArray()
+        assertTrue(SessionCodec.decode(tooMany) is SessionLoad.Failed)
+
+        val disordered = ByteArrayOutputStream().also { out ->
+            DataOutputStream(out).use { data ->
+                writeV6Header(data)
+                data.writeInt(1)
+                data.writeByte(5)
+                data.writeInt(1)
+                data.writeInt(2)
+                data.writeInt(ColorSettings.RED)
+                data.writeFloat(1f)
+                data.writeInt(32)
+                data.writeInt(4)
+                data.writeInt(8)
+                data.writeInt(8)
+                data.writeInt(2)
+                data.writeInt(2)
+                data.writeInt(0)
+                data.writeInt(1)
+                data.writeInt(1)
+                data.writeInt(0)
+                data.writeInt(1)
+                data.writeInt(0)
+                data.writeInt(0)
+                data.writeBoolean(false)
+            }
+        }.toByteArray()
+        val loaded = SessionCodec.decode(disordered) as SessionLoad.Ok
+        assertTrue(loaded.snapshot.objects.isEmpty())
+        assertEquals(0, loaded.snapshot.undoCount)
+    }
+
+    @Test
     fun recentCountAboveTheCapFailsTheHeader() {
         val bytes = ByteArrayOutputStream().also { out ->
             DataOutputStream(out).use { data ->
@@ -427,6 +530,71 @@ class SessionCodecTest {
         val decoded = SessionCodec.decode(bytes)
         assertTrue(decoded is SessionLoad.Failed)
         assertEquals("unknown version 99", (decoded as SessionLoad.Failed).reason)
+    }
+
+    private fun legacyWithFill(version: Int): ByteArray {
+        return ByteArrayOutputStream().also { out ->
+            DataOutputStream(out).use { data ->
+                data.writeInt(SessionCodec.MAGIC)
+                data.writeInt(version)
+                data.writeInt(10)
+                data.writeInt(10)
+                data.writeInt(0xFFFFFFFF.toInt())
+                data.writeUTF("BRUSH")
+                data.writeFloat(4f)
+                data.writeFloat(1f)
+                data.writeFloat(16f)
+                data.writeFloat(1f)
+                if (version >= 2) data.writeBoolean(true)
+                if (version >= 3) {
+                    data.writeUTF("RECTANGLE")
+                    data.writeBoolean(false)
+                    data.writeBoolean(false)
+                }
+                if (version >= 5) {
+                    data.writeInt(0xFF000000.toInt())
+                    data.writeInt(0xFF000000.toInt())
+                    data.writeByte(0)
+                }
+                data.writeInt(2)
+                data.writeByte(1)
+                data.writeInt(0xFF000000.toInt())
+                data.writeFloat(4f)
+                data.writeFloat(1f)
+                data.writeUTF("FINGER")
+                data.writeInt(1)
+                data.writeFloat(1f)
+                data.writeFloat(1f)
+                data.writeFloat(1f)
+                data.writeLong(1L)
+                data.writeByte(5)
+                data.writeInt(2)
+                data.writeInt(0)
+                if (version >= 4) data.writeBoolean(false)
+            }
+        }.toByteArray()
+    }
+
+    private fun writeV6Header(data: DataOutputStream) {
+        data.writeInt(SessionCodec.MAGIC)
+        data.writeInt(6)
+        data.writeInt(8)
+        data.writeInt(8)
+        data.writeInt(0xFFFFFFFF.toInt())
+        data.writeUTF("FILL")
+        data.writeFloat(4f)
+        data.writeFloat(1f)
+        data.writeFloat(16f)
+        data.writeFloat(1f)
+        data.writeBoolean(true)
+        data.writeUTF("RECTANGLE")
+        data.writeBoolean(false)
+        data.writeBoolean(false)
+        data.writeInt(ColorSettings.BLACK)
+        data.writeInt(ColorSettings.RED)
+        data.writeByte(0)
+        data.writeInt(32)
+        data.writeInt(2)
     }
 
     private fun header(version: Int): ByteArray {

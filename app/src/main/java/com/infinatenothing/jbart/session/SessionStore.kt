@@ -26,7 +26,9 @@ class FileSessionStore(private val filesDir: File) : SessionStore {
         val dir = File(filesDir, DIR)
         if (!dir.exists() && !dir.mkdirs()) error("session dir")
         val tmp = File(dir, "$FILE.tmp")
-        tmp.writeBytes(SessionCodec.encode(snapshot))
+        val encoded = SessionCodec.encode(snapshot)
+        SessionCodec.log("autosave bytes=${encoded.size}")
+        tmp.writeBytes(encoded)
         val dest = File(dir, FILE)
         if (dest.exists() && !dest.delete()) error("session replace")
         if (!tmp.renameTo(dest)) {

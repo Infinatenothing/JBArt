@@ -431,6 +431,96 @@ class DrawingViewModelTest {
         assertEquals(ColorTarget.STROKE, fromSession.colorTarget)
     }
 
+    @Test
+    fun fillCommitPushesRecentAndUndoUsesRunEquality() {
+        val model = model()
+        model.updateFillColor(ColorSettings.BLUE)
+        val runs = intArrayOf(0, 0, 2, 1, 1, 3)
+        val fill = DrawObject.Fill(
+            seedX = 1,
+            seedY = 2,
+            color = ColorSettings.BLUE,
+            alpha = 1f,
+            tolerance = 32,
+            gapPx = 4,
+            width = 8,
+            height = 8,
+            runs = runs,
+        )
+        model.commit(fill)
+        assertEquals(listOf(fill), model.document.objects.toList())
+        assertEquals(1, model.history.undoCount)
+        assertEquals(listOf(ColorSettings.BLUE), model.colorSettings.recent)
+        model.undo()
+        assertTrue(model.document.objects.isEmpty())
+        model.redo()
+        val restored = model.document.objects.single() as DrawObject.Fill
+        assertEquals(fill, restored)
+        assertTrue(restored.runs.contentEquals(runs))
+    }
+
+    @Test
+    fun pendingShapeIsCommittedBeforeAFill() {
+        val model = model()
+        val staged = shape(3f)
+        model.stagePending(staged)
+        val fill = DrawObject.Fill(
+            seedX = 0,
+            seedY = 0,
+            color = ColorSettings.RED,
+            alpha = 1f,
+            tolerance = 8,
+            gapPx = 0,
+            width = 4,
+            height = 4,
+            runs = intArrayOf(0, 0, 1),
+        )
+        model.commit(fill)
+        assertNull(model.pending)
+        assertEquals(listOf(staged, fill), model.document.objects.toList())
+        assertEquals(2, model.history.undoCount)
+    }
+
+    @Test
+    fun fillSettingsSurviveSavedStateAndTheSessionFile() {
+        val store = CodecSessionStore()
+        val handle = SavedStateHandle()
+        val model = model(handle, store)
+        assertEquals(32, model.fillTolerance)
+        assertEquals(2, model.fillGapDp)
+        model.updateFillTolerance(18)
+        model.updateFillGap(7)
+        val fill = DrawObject.Fill(
+            seedX = 0,
+            seedY = 0,
+            color = ColorSettings.GREEN,
+            alpha = 1f,
+            tolerance = 18,
+            gapPx = 3,
+            width = 4,
+            height = 4,
+            runs = intArrayOf(0, 0, 2),
+        )
+        model.commit(fill)
+        model.onHostStop()
+        val fromHandle = model(
+            SavedStateHandle(
+                mapOf(
+                    DrawingViewModel.KEY_FILL_TOLERANCE to handle.get<Int>(DrawingViewModel.KEY_FILL_TOLERANCE),
+                    DrawingViewModel.KEY_FILL_GAP to handle.get<Int>(DrawingViewModel.KEY_FILL_GAP),
+                ),
+            ),
+            store,
+        )
+        assertEquals(18, fromHandle.fillTolerance)
+        assertEquals(7, fromHandle.fillGapDp)
+        assertEquals(fill, fromHandle.document.objects.single())
+        val fromSession = model(SavedStateHandle(), store)
+        assertEquals(18, fromSession.fillTolerance)
+        assertEquals(7, fromSession.fillGapDp)
+        assertEquals(fill, fromSession.document.objects.single())
+    }
+
     private fun model(
         savedState: SavedStateHandle = SavedStateHandle(),
         store: SessionStore = MemorySessionStore(),

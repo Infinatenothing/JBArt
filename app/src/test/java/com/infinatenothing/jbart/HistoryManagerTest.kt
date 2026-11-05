@@ -203,6 +203,37 @@ class HistoryManagerTest {
         assertFalse(history.canUndo)
     }
 
+    @Test
+    fun fillCountsRunsTowardThePointCap() {
+        val small = fill(runs = 2)
+        val history = HistoryManager(maxEntries = 10, maxPoints = 3)
+        history.push(small)
+        assertEquals(1, history.undoCount)
+        history.push(fill(seedX = 1, runs = 2))
+        assertEquals(1, history.undoCount)
+        val kept = history.undo() as DrawObject.Fill
+        assertEquals(1, kept.seedX)
+        assertNull(history.undo())
+    }
+
+    private fun fill(seedX: Int = 0, runs: Int) = DrawObject.Fill(
+        seedX = seedX,
+        seedY = 0,
+        color = 0xFF000000.toInt(),
+        alpha = 1f,
+        tolerance = 32,
+        gapPx = 0,
+        width = 8,
+        height = 8,
+        runs = IntArray(runs * 3) { index ->
+            when (index % 3) {
+                0 -> index / 3
+                1 -> 0
+                else -> 1
+            }
+        },
+    )
+
     private fun shape(kind: ShapeKind) = DrawObject.Shape(
         kind = kind,
         x1 = 0f,

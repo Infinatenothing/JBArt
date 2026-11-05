@@ -4,6 +4,7 @@ import android.app.Activity
 import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -11,8 +12,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.BottomSheetDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
@@ -22,6 +25,7 @@ import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSiz
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -48,6 +52,7 @@ import com.infinatenothing.jbart.model.Tool
 import com.infinatenothing.jbart.ui.toolbar.BrushSettingsPanel
 import com.infinatenothing.jbart.ui.toolbar.ColorPickerPanel
 import com.infinatenothing.jbart.ui.toolbar.DrawingToolbar
+import com.infinatenothing.jbart.ui.toolbar.FillSettingsPanel
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3WindowSizeClassApi::class)
 @Composable
@@ -64,8 +69,9 @@ fun DrawingScreen(model: DrawingViewModel) {
     var colorPickerOpen by remember { mutableStateOf(false) }
     val revision = model.revision
     val pending = model.pending
-    val canUndo = pending != null || model.history.canUndo
-    val canRedo = pending == null && model.history.canRedo
+    val fillBusy = model.fillBusy
+    val canUndo = !fillBusy && (pending != null || model.history.canUndo)
+    val canRedo = !fillBusy && pending == null && model.history.canRedo
     val selectedTool = model.tool
     val brushSettings = model.brushSettings
     val eraserSettings = model.eraserSettings
@@ -90,6 +96,9 @@ fun DrawingScreen(model: DrawingViewModel) {
                 view.strokeColor = model.colorSettings.stroke
                 view.fillColor = model.colorSettings.fill
                 view.shapeFilled = model.shapeFilled
+                view.fillTolerance = model.fillTolerance
+                view.fillGapDp = model.fillGapDp
+                view.onFillBusy = { model.setFillRunning(it) }
                 view.eyedropperTarget = if (model.colorTarget == ColorTarget.FILL) "fill" else "stroke"
                 view.onEyedropperPick = { model.pickEyedropper(it) }
                 view.onEyedropperCancel = { model.cancelEyedropper() }
@@ -136,6 +145,10 @@ fun DrawingScreen(model: DrawingViewModel) {
             onShapeKind = { model.updateShapeKind(it) },
             onShapeConstrain = { model.updateShapeConstrain(it) },
             onShapeFilled = { model.updateShapeFilled(it) },
+            fillTolerance = model.fillTolerance,
+            fillGapDp = model.fillGapDp,
+            onFillTolerance = { model.updateFillTolerance(it) },
+            onFillGap = { model.updateFillGap(it) },
             settingsTool = settingsTool,
             onSelectTool = { tool ->
                 canvasView[0]?.flushPendingEdit()
@@ -179,6 +192,13 @@ fun DrawingScreen(model: DrawingViewModel) {
     val cancelEyedropper = {
         canvasView[0]?.cancelEyedropperGesture() ?: model.cancelEyedropper()
     }
+    DisposableEffect(model) {
+        model.cancelInFlightFill = { canvasView[0]?.cancelOutstandingFill() }
+        onDispose {
+            canvasView[0]?.cancelOutstandingFill()
+            model.cancelInFlightFill = null
+        }
+    }
     if (model.eyedropperActive) {
         BackHandler(onBack = cancelEyedropper)
     }
@@ -187,6 +207,7 @@ fun DrawingScreen(model: DrawingViewModel) {
             Box(Modifier.padding(padding).fillMaxSize()) {
                 canvas(Modifier.fillMaxSize())
                 if (model.eyedropperActive) EyedropperCancel(cancelEyedropper)
+                if (fillBusy) FillBusy(Modifier.align(Alignment.TopCenter))
             }
         }
     } else {
@@ -196,12 +217,28 @@ fun DrawingScreen(model: DrawingViewModel) {
                 Box(Modifier.weight(1f).fillMaxHeight()) {
                     canvas(Modifier.fillMaxSize())
                     if (model.eyedropperActive) EyedropperCancel(cancelEyedropper)
+                    if (fillBusy) FillBusy(Modifier.align(Alignment.TopCenter))
                 }
             }
         }
     }
     val openTool = settingsTool
-    if (compact && openTool != null) {
+    if (compact && openTool == Tool.FILL) {
+        ModalBottomSheet(
+            onDismissRequest = { settingsTool = null },
+            containerColor = Color.White,
+            dragHandle = { BottomSheetDefaults.DragHandle(color = Color.Black) },
+        ) {
+            FillSettingsPanel(
+                tolerance = model.fillTolerance,
+                gapDp = model.fillGapDp,
+                onTolerance = { model.updateFillTolerance(it) },
+                onGap = { model.updateFillGap(it) },
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 32.dp),
+            )
+        }
+    }
+    if (compact && openTool != null && openTool != Tool.FILL) {
         val eraser = openTool == Tool.ERASER
         ModalBottomSheet(
             onDismissRequest = { settingsTool = null },
@@ -226,6 +263,25 @@ fun DrawingScreen(model: DrawingViewModel) {
         ) {
             colorPicker(Modifier.fillMaxWidth().padding(bottom = 24.dp))
         }
+    }
+}
+
+@Composable
+private fun FillBusy(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .padding(12.dp)
+            .size(48.dp)
+            .background(Color.White)
+            .border(2.dp, Color.Black)
+            .testTag("fill_busy"),
+        contentAlignment = Alignment.Center,
+    ) {
+        CircularProgressIndicator(
+            color = Color.Black,
+            strokeWidth = 3.dp,
+            modifier = Modifier.size(24.dp),
+        )
     }
 }
 

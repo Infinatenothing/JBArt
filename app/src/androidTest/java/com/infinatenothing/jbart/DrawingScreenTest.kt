@@ -213,6 +213,28 @@ class DrawingScreenTest {
     }
 
     @Test
+    fun fillTapAddsOneFillAndUndoRemovesIt() {
+        rule.onNodeWithTag("tool_fill").performScrollTo().performClick()
+        rule.waitForIdle()
+        val model = ViewModelProvider(rule.activity)[DrawingViewModel::class.java]
+        if (model.pending != null) {
+            rule.runOnUiThread { model.undo() }
+            rule.waitForIdle()
+        }
+        val before = model.document.objects.size
+        val view = drawingView()
+        tap(view, view.width * 0.5f, view.height * 0.5f)
+        rule.waitUntil(5_000) {
+            !model.fillBusy && model.document.objects.size == before + 1
+        }
+        assertTrue(rule.onAllNodesWithTag("fill_busy").fetchSemanticsNodes().isEmpty())
+        assertTrue(model.document.objects.last() is DrawObject.Fill)
+        rule.onNodeWithTag("tool_undo").performScrollTo().performClick()
+        rule.waitForIdle()
+        assertEquals(before, model.document.objects.size)
+    }
+
+    @Test
     fun eraserSettingsPopupShowsSizeSliderOnly() {
         rule.onNodeWithTag("tool_eraser").performClick()
         rule.onNodeWithTag("tool_eraser").performClick()

@@ -17,7 +17,7 @@ object InputRouting {
     /**
      * Tool to draw with for this pointer, or null when the event should not draw.
      * The eraser end and a held stylus button erase without changing the selected tool.
-     * Mouse follows the selected brush, eraser, line, or shape so desktop and emulator input still draw.
+     * Mouse follows the selected brush, eraser, line, shape, or fill so desktop and emulator input still draw.
      */
     fun toolForEvent(selectedTool: Tool, toolType: Int, buttonState: Int): Tool? {
         if (toolType == TOOL_TYPE_ERASER) return Tool.ERASER
@@ -29,7 +29,7 @@ object InputRouting {
             Tool.ERASER -> Tool.ERASER
             Tool.LINE -> Tool.LINE
             Tool.SHAPE -> Tool.SHAPE
-            Tool.FILL -> null
+            Tool.FILL -> Tool.FILL
         }
     }
 
