@@ -107,6 +107,14 @@ fun DrawingScreen(model: DrawingViewModel) {
                 view.onStagePending = { model.stagePending(it) }
                 view.onUpdatePending = { model.updatePending(it) }
                 view.onCommitPending = { model.commitPending() }
+                view.onViewChanged = { scale, centerX, centerY ->
+                    model.updateView(scale, centerX, centerY)
+                }
+                view.setViewState(
+                    model.viewScale,
+                    model.viewCenterX ?: Float.NaN,
+                    model.viewCenterY ?: Float.NaN,
+                )
                 view.bindPending(pending)
                 view.sync(model.document, revision)
             },
@@ -186,6 +194,9 @@ fun DrawingScreen(model: DrawingViewModel) {
                 colorPickerOpen = true
             },
             onDismissColor = { colorPickerOpen = false },
+            zoomScale = model.viewScale,
+            onZoomIn = { canvasView[0]?.zoomIn() },
+            onZoomOut = { canvasView[0]?.zoomOut() },
             modifier = modifier,
         )
     }

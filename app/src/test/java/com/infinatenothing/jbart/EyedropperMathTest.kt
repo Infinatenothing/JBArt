@@ -38,6 +38,26 @@ class EyedropperMathTest {
     }
 
     @Test
+    fun transformMapsZoomAndLeavesOutsidePointsWhenUnclamped() {
+        val out = FloatArray(2)
+        EyedropperMath.toBitmapCoords(110f, 120f, 2f, 10f, 20f, 100, 80, out, clamp = true)
+        assertEquals(50f, out[0], 0.01f)
+        assertEquals(50f, out[1], 0.01f)
+
+        EyedropperMath.toBitmapCoords(100f, 80f, 1f, 0f, 0f, 100, 80, out, clamp = true)
+        assertEquals(99f, out[0], 0.01f)
+        assertEquals(79f, out[1], 0.01f)
+
+        EyedropperMath.toBitmapCoords(-40f, 200f, 2f, 10f, -20f, 100, 80, out, clamp = true)
+        assertEquals(0f, out[0], 0f)
+        assertEquals(79f, out[1], 0.01f)
+
+        EyedropperMath.toBitmapCoords(0f, 0f, 2f, 10f, 20f, 100, 80, out, clamp = false)
+        assertEquals(-5f, out[0], 0.01f)
+        assertEquals(-10f, out[1], 0.01f)
+    }
+
+    @Test
     fun compositeOverCoversOpaqueTransparentAndHalfAlpha() {
         val blue = 0xFF0000FF.toInt()
         assertEquals(0xFFFF0000.toInt(), ColorMath.compositeOver(0xFFFF0000.toInt(), blue))

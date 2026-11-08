@@ -5,6 +5,7 @@ import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PorterDuff
@@ -135,6 +136,7 @@ class DrawingView(context: Context) : View(context) {
     var fillTolerance: Int = 32
     var fillGapDp: Int = 2
     var onFillBusy: (Boolean) -> Unit = {}
+    var onViewChanged: (Float, Float, Float) -> Unit = { _, _, _ -> }
 
     private var ink: Bitmap? = null
     private var inkCanvas: Canvas? = null
@@ -245,6 +247,25 @@ class DrawingView(context: Context) : View(context) {
     private var fillMoved = false
     private var fillStartX = 0f
     private var fillStartY = 0f
+    private var fillScreenX = 0f
+    private var fillScreenY = 0f
+    private val viewTransform = ViewTransform()
+    private val viewMatrix = Matrix()
+    private val mapped = FloatArray(2)
+    private val cornerScratch = FloatArray(8)
+    private val cornerMatrix = Matrix()
+    private val outsidePaint = Paint().apply { color = Color.rgb(189, 189, 189) }
+    private val canvasFillPaint = Paint()
+    private val crispBitmapPaint = Paint().apply { isFilterBitmap = false }
+    private val smoothBitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private var viewScaleRequest = 1f
+    private var viewCenterXRequest = Float.NaN
+    private var viewCenterYRequest = Float.NaN
+    private var navigating = false
+    private var navFrozen = false
+    private var navFocusX = 0f
+    private var navFocusY = 0f
+    private var navSpan = 0f
 
     init {
         setWillNotDraw(false)
@@ -259,7 +280,26 @@ class DrawingView(context: Context) : View(context) {
         labelPaint.textSize = 12f * resources.displayMetrics.density
         loupeTextPaint.textSize = 12f * resources.displayMetrics.density
         handleLinePaint.strokeWidth = dp(1.5f)
+        syncMatrix()
     }
+
+    /** Restores a saved view. NaN centers keep the identity transform. */
+    fun setViewState(scale: Float, centerX: Float, centerY: Float) {
+        val nextScale = scale.coerceIn(ViewTransform.MIN_SCALE, ViewTransform.MAX_SCALE)
+        if (viewScaleRequest == nextScale && sameCenter(viewCenterXRequest, centerX) &&
+            sameCenter(viewCenterYRequest, centerY)
+        ) {
+            return
+        }
+        viewScaleRequest = nextScale
+        viewCenterXRequest = centerX
+        viewCenterYRequest = centerY
+        if (width > 0 && height > 0) applyViewRequest(publish = false)
+    }
+
+    fun zoomIn() = stepZoom(ViewTransform.STEP)
+
+    fun zoomOut() = stepZoom(1f / ViewTransform.STEP)
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         if (w <= 0 || h <= 0) return
@@ -302,15 +342,24 @@ class DrawingView(context: Context) : View(context) {
             activePointerId = MotionEvent.INVALID_POINTER_ID
         }
         renderAll()
+        applyViewRequest(publish = !viewCenterXRequest.isNaN() && !viewCenterYRequest.isNaN())
     }
 
     override fun onDraw(canvas: Canvas) {
-        canvas.drawColor(document?.backgroundColor ?: Color.WHITE)
+        val identity = identityView()
+        if (!identity) {
+            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), outsidePaint)
+        }
+        canvas.save()
+        canvas.concat(viewMatrix)
+        canvasFillPaint.color = document?.backgroundColor ?: Color.WHITE
+        canvas.drawRect(0f, 0f, canvasWidth(), canvasHeight(), canvasFillPaint)
+        val contentPaint = bitmapPaint()
         ink?.let { bitmap ->
             // CPU draws into this bitmap after the GPU has cached it. Without
             // prepareToDraw the screen keeps the first blank upload.
             bitmap.prepareToDraw()
-            canvas.drawBitmap(bitmap, 0f, 0f, null)
+            canvas.drawBitmap(bitmap, 0f, 0f, contentPaint)
         }
         val pending = pendingShape
         val line = pendingLine
@@ -318,25 +367,28 @@ class DrawingView(context: Context) : View(context) {
             scratch?.let { bitmap ->
                 bitmap.prepareToDraw()
                 blitPaint.xfermode = null
+                blitPaint.isFilterBitmap = contentPaint?.isFilterBitmap == true
                 val alpha = if (drawing) strokeAlpha else pending?.alpha ?: line?.alpha ?: strokeAlpha
                 blitPaint.alpha = alphaByte(alpha)
                 canvas.drawBitmap(bitmap, 0f, 0f, blitPaint)
             }
-            if (!drawing) {
-                if (pending != null) drawHandles(canvas, pending)
-                else if (line != null) drawLineHandles(canvas, line)
-            }
-            if (drawing && activeDrawTool == Tool.LINE && labelBuilder.isNotEmpty()) {
-                val offset = labelPaint.textSize
-                canvas.drawText(
-                    labelBuilder,
-                    0,
-                    labelBuilder.length,
-                    lineEndX + offset,
-                    lineEndY - offset,
-                    labelPaint,
-                )
-            }
+        }
+        canvas.restore()
+        if (!drawing) {
+            if (pending != null) drawHandles(canvas, pending)
+            else if (line != null) drawLineHandles(canvas, line)
+        }
+        if (drawing && activeDrawTool == Tool.LINE && labelBuilder.isNotEmpty()) {
+            val offset = labelPaint.textSize
+            viewTransform.toScreen(lineEndX, lineEndY, mapped)
+            canvas.drawText(
+                labelBuilder,
+                0,
+                labelBuilder.length,
+                mapped[0] + offset,
+                mapped[1] - offset,
+                labelPaint,
+            )
         }
         if (eyedropperActive && loupeVisible) drawLoupe(canvas)
     }
@@ -344,6 +396,7 @@ class DrawingView(context: Context) : View(context) {
     fun requestRedraw() = invalidate()
 
     fun renderAll() {
+        Log.d(TAG, "renderAll")
         val canvas = inkCanvas ?: return
         canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
         for (obj in document?.objects.orEmpty()) {
@@ -440,6 +493,7 @@ class DrawingView(context: Context) : View(context) {
     fun cancelEyedropperGesture() {
         loupeVisible = false
         dropperPointer = MotionEvent.INVALID_POINTER_ID
+        stylusActive = false
         Log.d(TAG, "eyedropper cancel")
         invalidate()
         onEyedropperCancel()
@@ -469,17 +523,21 @@ class DrawingView(context: Context) : View(context) {
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (fillInFlight) return true
-        if (eyedropperActive) {
-            logEvent(event)
-            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-                parent?.requestDisallowInterceptTouchEvent(true)
-            }
-            onEyedropperTouch(event)
-            return true
-        }
         logEvent(event)
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             parent?.requestDisallowInterceptTouchEvent(true)
+        }
+        if (navigating) {
+            onNavigateTouch(event)
+            return true
+        }
+        if (event.actionMasked == MotionEvent.ACTION_POINTER_DOWN && shouldStartNavigate(event)) {
+            startNavigate(event)
+            return true
+        }
+        if (eyedropperActive) {
+            onEyedropperTouch(event)
+            return true
         }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> onPointerDown(event)
@@ -502,7 +560,7 @@ class DrawingView(context: Context) : View(context) {
                     endFillTrack()
                 } else if (pendingDrag) {
                     cancelPendingDrag()
-                } else {
+                } else if (drawing) {
                     discardActive()
                 }
             }
@@ -511,6 +569,12 @@ class DrawingView(context: Context) : View(context) {
     }
 
     private fun onPointerDown(event: MotionEvent) {
+        val mode = InputRouting.modeForPointer(
+            event.getToolType(0),
+            pointerCount = 1,
+            stylusDown = false,
+        )
+        if (mode != GestureMode.DRAW) return
         if (pendingDrag) cancelPendingDrag()
         if (drawing) discardActive()
         val routed = InputRouting.toolForEvent(tool, event.getToolType(0), event.buttonState)
@@ -530,15 +594,15 @@ class DrawingView(context: Context) : View(context) {
             return
         }
         if (routed == Tool.LINE && pendingLine != null) {
-            val x = event.getX(0)
-            val y = event.getY(0)
+            val x = canvasX(event, 0)
+            val y = canvasY(event, 0)
             val line = pendingLine ?: return
-            val handle = LineTransform.hitLineHandle(line, x, y, handleTouchPx())
+            val handle = LineTransform.hitLineHandle(line, x, y, canvasUnits(handleTouchPx()))
             if (handle != null) {
                 beginLineDrag(handle, x, y, event, 0)
                 return
             }
-            val slop = max(line.widthPx / 2f, dp(LineTransform.BODY_SLOP_DP))
+            val slop = max(line.widthPx / 2f, canvasUnits(dp(LineTransform.BODY_SLOP_DP)))
             if (LineTransform.nearLine(line, x, y, slop)) {
                 beginLineDrag(null, x, y, event, 0)
                 return
@@ -548,10 +612,16 @@ class DrawingView(context: Context) : View(context) {
             return
         }
         if (routed == Tool.SHAPE && pendingShape != null) {
-            val x = event.getX(0)
-            val y = event.getY(0)
+            val x = canvasX(event, 0)
+            val y = canvasY(event, 0)
             val shape = pendingShape ?: return
-            val handle = ShapeTransform.hitHandle(shape, x, y, handleTouchPx(), rotateOffsetPx())
+            val handle = ShapeTransform.hitHandle(
+                shape,
+                x,
+                y,
+                canvasUnits(handleTouchPx()),
+                canvasUnits(rotateOffsetPx()),
+            )
             if (handle != null) {
                 beginPendingDrag(handle, x, y, event, 0)
                 return
@@ -576,14 +646,16 @@ class DrawingView(context: Context) : View(context) {
         val index = event.findPointerIndex(activePointerId)
         if (index < 0) return
         if (ignoredPointer(event, index)) return
-        val x = event.getX(index)
-        val y = event.getY(index)
         if (fillTracking) {
-            if (!ignoredPointer(event, index) && hypot(x - fillStartX, y - fillStartY) > touchSlop) {
+            val x = event.getX(index)
+            val y = event.getY(index)
+            if (hypot(x - fillScreenX, y - fillScreenY) > touchSlop) {
                 fillMoved = true
             }
             return
         }
+        val x = canvasX(event, index)
+        val y = canvasY(event, index)
         when {
             pendingDrag -> updatePendingDrag(x, y)
             !drawing -> Unit
@@ -611,8 +683,11 @@ class DrawingView(context: Context) : View(context) {
         stylusActive = toolType == MotionEvent.TOOL_TYPE_STYLUS || toolType == MotionEvent.TOOL_TYPE_ERASER
         fillTracking = true
         fillMoved = false
-        fillStartX = event.getX(0)
-        fillStartY = event.getY(0)
+        fillScreenX = event.getX(0)
+        fillScreenY = event.getY(0)
+        viewTransform.toCanvas(fillScreenX, fillScreenY, mapped)
+        fillStartX = mapped[0]
+        fillStartY = mapped[1]
     }
 
     private fun finishFillTap(event: MotionEvent) {
@@ -620,12 +695,14 @@ class DrawingView(context: Context) : View(context) {
         val moved = fillMoved
         val startX = fillStartX
         val startY = fillStartY
+        val screenX = fillScreenX
+        val screenY = fillScreenY
         val ignorePalm = index >= 0 && ignoredPointer(event, index)
         endFillTrack()
         if (index < 0 || ignorePalm) return
         val x = event.getX(index)
         val y = event.getY(index)
-        if (moved || hypot(x - startX, y - startY) > touchSlop) {
+        if (moved || hypot(x - screenX, y - screenY) > touchSlop) {
             Log.d(TAG, "fill drag ignored")
             return
         }
@@ -647,10 +724,12 @@ class DrawingView(context: Context) : View(context) {
         val widthPx = bitmap.width
         val heightPx = bitmap.height
         if (widthPx <= 0 || heightPx <= 0) return
-        val coords = eyedropperOut
-        EyedropperMath.toBitmapCoords(x, y, width, height, widthPx, heightPx, coords)
-        val seedX = coords[0].roundToInt().coerceIn(0, widthPx - 1)
-        val seedY = coords[1].roundToInt().coerceIn(0, heightPx - 1)
+        if (x < 0f || y < 0f || x >= widthPx || y >= heightPx) {
+            Log.d(TAG, "fill outside")
+            return
+        }
+        val seedX = x.roundToInt().coerceIn(0, widthPx - 1)
+        val seedY = y.roundToInt().coerceIn(0, heightPx - 1)
         val pixels = IntArray(widthPx * heightPx)
         bitmap.getPixels(pixels, 0, widthPx, 0, 0, widthPx, heightPx)
         val background = document?.backgroundColor ?: Color.WHITE
@@ -758,8 +837,8 @@ class DrawingView(context: Context) : View(context) {
         strokeBaseWidthPx = settings.sizeDp * resources.displayMetrics.density
         strokeAlpha = settings.opacity
         drawing = true
-        lineStartX = event.getX(index)
-        lineStartY = event.getY(index)
+        lineStartX = canvasX(event, index)
+        lineStartY = canvasY(event, index)
         lineEndX = lineStartX
         lineEndY = lineStartY
         lastRawX = lineStartX
@@ -818,7 +897,7 @@ class DrawingView(context: Context) : View(context) {
         if (!drawing) return
         val index = event.findPointerIndex(activePointerId)
         if (index >= 0 && !ignoredPointer(event, index)) {
-            moveLine(event.getX(index), event.getY(index))
+            moveLine(canvasX(event, index), canvasY(event, index))
         }
         val x1 = lineStartX
         val y1 = lineStartY
@@ -946,8 +1025,8 @@ class DrawingView(context: Context) : View(context) {
         val historySize = event.historySize
         for (h in 0 until historySize) {
             addPoint(
-                event.getHistoricalX(pointerIndex, h),
-                event.getHistoricalY(pointerIndex, h),
+                canvasHistoricalX(event, pointerIndex, h),
+                canvasHistoricalY(event, pointerIndex, h),
                 event.getHistoricalPressure(pointerIndex, h),
                 event.getHistoricalEventTime(h),
             )
@@ -957,8 +1036,8 @@ class DrawingView(context: Context) : View(context) {
 
     private fun addCurrent(event: MotionEvent, pointerIndex: Int) {
         addPoint(
-            event.getX(pointerIndex),
-            event.getY(pointerIndex),
+            canvasX(event, pointerIndex),
+            canvasY(event, pointerIndex),
             event.getPressure(pointerIndex),
             event.eventTime,
         )
@@ -1086,8 +1165,8 @@ class DrawingView(context: Context) : View(context) {
         strokeBaseWidthPx = settings.sizeDp * resources.displayMetrics.density
         strokeAlpha = settings.opacity
         drawing = true
-        shapeStartX = event.getX(index)
-        shapeStartY = event.getY(index)
+        shapeStartX = canvasX(event, index)
+        shapeStartY = canvasY(event, index)
         shapeEndX = shapeStartX
         shapeEndY = shapeStartY
         lastRawX = shapeStartX
@@ -1159,7 +1238,7 @@ class DrawingView(context: Context) : View(context) {
         if (!drawing) return
         val index = event.findPointerIndex(activePointerId)
         if (index >= 0 && !ignoredPointer(event, index)) {
-            moveShape(event.getX(index), event.getY(index))
+            moveShape(canvasX(event, index), canvasY(event, index))
         }
         val kind = shapeKind
         val x1 = shapeStartX
@@ -1376,7 +1455,7 @@ class DrawingView(context: Context) : View(context) {
         if (!pendingDrag) return
         val index = event.findPointerIndex(activePointerId)
         if (index >= 0 && !ignoredPointer(event, index)) {
-            updatePendingDrag(event.getX(index), event.getY(index))
+            updatePendingDrag(canvasX(event, index), canvasY(event, index))
         }
         if (lineDragOrigin != null) {
             val line = pendingLine
@@ -1453,13 +1532,26 @@ class DrawingView(context: Context) : View(context) {
         ShapeGeometry.normalizedBoxInto(shape.x1, shape.y1, shape.x2, shape.y2, shapeBox)
         val cx = (shapeBox[0] + shapeBox[2]) * 0.5f
         val cy = (shapeBox[1] + shapeBox[3]) * 0.5f
-        canvas.save()
-        if (shape.rotationDeg != 0f) canvas.rotate(shape.rotationDeg, cx, cy)
+        cornerScratch[0] = shapeBox[0]
+        cornerScratch[1] = shapeBox[1]
+        cornerScratch[2] = shapeBox[2]
+        cornerScratch[3] = shapeBox[1]
+        cornerScratch[4] = shapeBox[2]
+        cornerScratch[5] = shapeBox[3]
+        cornerScratch[6] = shapeBox[0]
+        cornerScratch[7] = shapeBox[3]
+        if (shape.rotationDeg != 0f) {
+            cornerMatrix.setRotate(shape.rotationDeg, cx, cy)
+            cornerMatrix.mapPoints(cornerScratch)
+        }
+        mapPointsToScreen(cornerScratch, 4)
         handleLinePaint.strokeWidth = dp(1f)
-        shapeRect.set(shapeBox[0], shapeBox[1], shapeBox[2], shapeBox[3])
-        canvas.drawRect(shapeRect, handleLinePaint)
-        canvas.restore()
-        ShapeTransform.handlePositions(shape, rotateOffsetPx(), handleOut)
+        canvas.drawLine(cornerScratch[0], cornerScratch[1], cornerScratch[2], cornerScratch[3], handleLinePaint)
+        canvas.drawLine(cornerScratch[2], cornerScratch[3], cornerScratch[4], cornerScratch[5], handleLinePaint)
+        canvas.drawLine(cornerScratch[4], cornerScratch[5], cornerScratch[6], cornerScratch[7], handleLinePaint)
+        canvas.drawLine(cornerScratch[6], cornerScratch[7], cornerScratch[0], cornerScratch[1], handleLinePaint)
+        ShapeTransform.handlePositions(shape, canvasUnits(rotateOffsetPx()), handleOut)
+        mapPointsToScreen(handleOut, Handle.entries.size)
         val top = Handle.TOP.ordinal
         val rotate = Handle.ROTATE.ordinal
         handleLinePaint.strokeWidth = dp(1.5f)
@@ -1481,9 +1573,9 @@ class DrawingView(context: Context) : View(context) {
         ShapeTransform.rotatedBoundsInto(
             shape,
             shape.widthPx,
-            rotateOffsetPx(),
+            canvasUnits(rotateOffsetPx()),
             minArrowHeadPx(),
-            dp(8f),
+            canvasUnits(dp(8f)),
             shapeBounds,
         )
         invalidateBounds(shapeBounds)
@@ -1492,10 +1584,12 @@ class DrawingView(context: Context) : View(context) {
     private fun drawLineHandles(canvas: Canvas, line: DrawObject.Line) {
         val radius = dp(6f)
         handleLinePaint.strokeWidth = dp(1.5f)
-        canvas.drawCircle(line.x1, line.y1, radius, handleFillPaint)
-        canvas.drawCircle(line.x1, line.y1, radius, handleLinePaint)
-        canvas.drawCircle(line.x2, line.y2, radius, handleFillPaint)
-        canvas.drawCircle(line.x2, line.y2, radius, handleLinePaint)
+        viewTransform.toScreen(line.x1, line.y1, mapped)
+        canvas.drawCircle(mapped[0], mapped[1], radius, handleFillPaint)
+        canvas.drawCircle(mapped[0], mapped[1], radius, handleLinePaint)
+        viewTransform.toScreen(line.x2, line.y2, mapped)
+        canvas.drawCircle(mapped[0], mapped[1], radius, handleFillPaint)
+        canvas.drawCircle(mapped[0], mapped[1], radius, handleLinePaint)
     }
 
     private fun invalidateLine(line: DrawObject.Line) {
@@ -1506,7 +1600,7 @@ class DrawingView(context: Context) : View(context) {
             line.y2,
             line.x2,
             line.y2,
-            max(line.widthPx, dp(16f)),
+            max(line.widthPx, canvasUnits(dp(16f))),
         )
     }
 
@@ -1596,13 +1690,7 @@ class DrawingView(context: Context) : View(context) {
     }
 
     private fun invalidateBounds(bounds: FloatArray) {
-        @Suppress("DEPRECATION")
-        invalidate(
-            bounds[0].toInt(),
-            bounds[1].toInt(),
-            bounds[2].toInt() + 1,
-            bounds[3].toInt() + 1,
-        )
+        invalidateCanvasRect(bounds[0], bounds[1], bounds[2], bounds[3], screenPad = 2f)
     }
 
     private fun stampErase(points: List<StrokePoint>, width: Float, type: InputType) {
@@ -1714,18 +1802,20 @@ class DrawingView(context: Context) : View(context) {
         y2: Float,
         width: Float,
     ) {
-        val pad = width * 0.5f + 2f
+        val pad = width * 0.5f
         val left = min(x0, min(x1, x2)) - pad
         val top = min(y0, min(y1, y2)) - pad
         val right = max(x0, max(x1, x2)) + pad
         val bottom = max(y0, max(y1, y2)) + pad
-        @Suppress("DEPRECATION")
-        invalidate(left.toInt(), top.toInt(), right.toInt() + 1, bottom.toInt() + 1)
+        val labelPad = if (showSnapLabel) labelPaint.textSize * 8f else 0f
+        invalidateCanvasRect(left, top, right, bottom, screenPad = 2f + labelPad)
     }
 
     private fun onEyedropperTouch(event: MotionEvent) {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                val toolType = event.getToolType(0)
+                stylusActive = toolType == MotionEvent.TOOL_TYPE_STYLUS || toolType == MotionEvent.TOOL_TYPE_ERASER
                 dropperPointer = event.getPointerId(0)
                 showLoupe(event.getX(0), event.getY(0))
             }
@@ -1744,6 +1834,7 @@ class DrawingView(context: Context) : View(context) {
                 val color = sampleVisible(event.getX(index), event.getY(index))
                 loupeVisible = false
                 dropperPointer = MotionEvent.INVALID_POINTER_ID
+                stylusActive = false
                 invalidate()
                 Log.d(TAG, "eyedropper pick color=${ColorMath.toHex(color)} target=$eyedropperTarget")
                 onEyedropperPick(color)
@@ -1751,6 +1842,7 @@ class DrawingView(context: Context) : View(context) {
             MotionEvent.ACTION_CANCEL -> {
                 loupeVisible = false
                 dropperPointer = MotionEvent.INVALID_POINTER_ID
+                stylusActive = false
                 invalidate()
                 Log.d(TAG, "eyedropper cancel")
                 onEyedropperCancel()
@@ -1771,7 +1863,17 @@ class DrawingView(context: Context) : View(context) {
         val background = document?.backgroundColor ?: Color.WHITE
         val bitmap = ink
         if (bitmap == null || bitmap.width <= 0 || bitmap.height <= 0) return opaque(background)
-        EyedropperMath.toBitmapCoords(x, y, width, height, bitmap.width, bitmap.height, eyedropperOut)
+        EyedropperMath.toBitmapCoords(
+            x,
+            y,
+            viewTransform.scale,
+            viewTransform.tx,
+            viewTransform.ty,
+            bitmap.width,
+            bitmap.height,
+            eyedropperOut,
+            clamp = true,
+        )
         val bx = eyedropperOut[0].roundToInt().coerceIn(0, bitmap.width - 1)
         val by = eyedropperOut[1].roundToInt().coerceIn(0, bitmap.height - 1)
         return ColorMath.compositeOver(bitmap.getPixel(bx, by), background)
@@ -1788,9 +1890,10 @@ class DrawingView(context: Context) : View(context) {
         val maxY = (height - radius).coerceAtLeast(radius)
         centerX = centerX.coerceIn(radius, maxX)
         centerY = centerY.coerceIn(radius, maxY)
+        viewTransform.toCanvas(loupeX, loupeY, mapped)
         val srcSpan = diameter / 8f
-        val srcLeft = loupeX - srcSpan * 0.5f
-        val srcTop = loupeY - srcSpan * 0.5f
+        val srcLeft = mapped[0] - srcSpan * 0.5f
+        val srcTop = mapped[1] - srcSpan * 0.5f
         loupeSrc.set(
             srcLeft.toInt(),
             srcTop.toInt(),
@@ -1862,6 +1965,249 @@ class DrawingView(context: Context) : View(context) {
         Log.d(
             TAG,
             "selected=$tool routed=${routed ?: "none"} tool=$kind buttonState=${event.buttonState} pressure=${event.getPressure(index)} action=${event.actionMasked}",
+        )
+    }
+
+    private fun shouldStartNavigate(event: MotionEvent): Boolean {
+        val mode = InputRouting.modeForPointer(
+            event.getToolType(event.actionIndex),
+            event.pointerCount,
+            stylusDown = stylusActive,
+        )
+        return mode == GestureMode.NAVIGATE
+    }
+
+    private fun startNavigate(event: MotionEvent) {
+        if (eyedropperActive) {
+            loupeVisible = false
+            dropperPointer = MotionEvent.INVALID_POINTER_ID
+            Log.d(TAG, "eyedropper cancel gesture")
+            invalidate()
+        }
+        if (fillTracking) {
+            endFillTrack()
+            Log.d(TAG, "fill tap cancelled")
+        } else if (pendingDrag) {
+            cancelPendingDrag()
+        } else if (drawing) {
+            discardActive()
+        }
+        navigating = true
+        navFrozen = false
+        activePointerId = MotionEvent.INVALID_POINTER_ID
+        rememberFocus(event, exclude = -1)
+    }
+
+    private fun onNavigateTouch(event: MotionEvent) {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_MOVE -> {
+                if (navFrozen || event.pointerCount < 2) return
+                val prevX = navFocusX
+                val prevY = navFocusY
+                val prevSpan = navSpan
+                rememberFocus(event, exclude = -1)
+                val factor = if (prevSpan > 1f && navSpan > 1f) navSpan / prevSpan else 1f
+                viewTransform.pinch(prevX, prevY, navFocusX, navFocusY, factor)
+                constrainView()
+                publishView()
+                invalidate()
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                navFrozen = false
+                rememberFocus(event, exclude = -1)
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                val remaining = event.pointerCount - 1
+                if (remaining < 2) {
+                    navFrozen = true
+                } else {
+                    navFrozen = false
+                    rememberFocus(event, exclude = event.actionIndex)
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                navigating = false
+                navFrozen = false
+                stylusActive = false
+                activePointerId = MotionEvent.INVALID_POINTER_ID
+            }
+            else -> Unit
+        }
+    }
+
+    private fun rememberFocus(event: MotionEvent, exclude: Int) {
+        var sumX = 0f
+        var sumY = 0f
+        var count = 0
+        var first = -1
+        var second = -1
+        for (i in 0 until event.pointerCount) {
+            if (i == exclude) continue
+            if (first < 0) {
+                first = i
+            } else if (second < 0) {
+                second = i
+            }
+            sumX += event.getX(i)
+            sumY += event.getY(i)
+            count++
+        }
+        if (count == 0) return
+        navFocusX = sumX / count
+        navFocusY = sumY / count
+        navSpan = if (second >= 0) {
+            hypot(event.getX(first) - event.getX(second), event.getY(first) - event.getY(second))
+        } else {
+            0f
+        }
+    }
+
+    private fun stepZoom(factor: Float) {
+        if (width <= 0 || height <= 0) return
+        viewTransform.zoomAround(width / 2f, height / 2f, factor)
+        constrainView()
+        publishView()
+        invalidate()
+    }
+
+    private fun constrainView() {
+        viewTransform.clamp(
+            canvasWidth(),
+            canvasHeight(),
+            width.toFloat(),
+            height.toFloat(),
+            dp(ViewTransform.MIN_VISIBLE_DP),
+        )
+        syncMatrix()
+    }
+
+    private fun applyViewRequest(publish: Boolean) {
+        if (width <= 0 || height <= 0) return
+        viewTransform.scale = viewScaleRequest.coerceIn(ViewTransform.MIN_SCALE, ViewTransform.MAX_SCALE)
+        val hadCenter = !viewCenterXRequest.isNaN() && !viewCenterYRequest.isNaN()
+        if (hadCenter) {
+            viewTransform.centerOn(
+                viewCenterXRequest,
+                viewCenterYRequest,
+                width.toFloat(),
+                height.toFloat(),
+            )
+            constrainView()
+        } else {
+            viewTransform.tx = 0f
+            viewTransform.ty = 0f
+            syncMatrix()
+        }
+        invalidate()
+        if (publish && hadCenter) publishView()
+    }
+
+    private fun publishView() {
+        if (width <= 0 || height <= 0) return
+        val scale = viewTransform.scale
+        val centerX = viewTransform.centerX(width.toFloat())
+        val centerY = viewTransform.centerY(height.toFloat())
+        viewScaleRequest = scale
+        viewCenterXRequest = centerX
+        viewCenterYRequest = centerY
+        Log.d(TAG, "view scale=$scale tx=${viewTransform.tx} ty=${viewTransform.ty}")
+        onViewChanged(scale, centerX, centerY)
+    }
+
+    private fun syncMatrix() {
+        viewMatrix.setScale(viewTransform.scale, viewTransform.scale)
+        viewMatrix.postTranslate(viewTransform.tx, viewTransform.ty)
+    }
+
+    private fun identityView(): Boolean {
+        return viewTransform.scale == 1f && viewTransform.tx == 0f && viewTransform.ty == 0f
+    }
+
+    private fun bitmapPaint(): Paint? {
+        if (identityView()) return null
+        return if (viewTransform.scale >= ViewTransform.CRISP_SCALE) crispBitmapPaint else smoothBitmapPaint
+    }
+
+    private fun canvasWidth(): Float {
+        val doc = document
+        if (doc != null && doc.width > 0) return doc.width.toFloat()
+        val bitmap = ink
+        if (bitmap != null && bitmap.width > 0) return bitmap.width.toFloat()
+        return width.toFloat().coerceAtLeast(1f)
+    }
+
+    private fun canvasHeight(): Float {
+        val doc = document
+        if (doc != null && doc.height > 0) return doc.height.toFloat()
+        val bitmap = ink
+        if (bitmap != null && bitmap.height > 0) return bitmap.height.toFloat()
+        return height.toFloat().coerceAtLeast(1f)
+    }
+
+    private fun canvasX(event: MotionEvent, index: Int): Float {
+        viewTransform.toCanvas(event.getX(index), event.getY(index), mapped)
+        return mapped[0]
+    }
+
+    private fun canvasY(event: MotionEvent, index: Int): Float {
+        viewTransform.toCanvas(event.getX(index), event.getY(index), mapped)
+        return mapped[1]
+    }
+
+    private fun canvasHistoricalX(event: MotionEvent, index: Int, history: Int): Float {
+        viewTransform.toCanvas(
+            event.getHistoricalX(index, history),
+            event.getHistoricalY(index, history),
+            mapped,
+        )
+        return mapped[0]
+    }
+
+    private fun canvasHistoricalY(event: MotionEvent, index: Int, history: Int): Float {
+        viewTransform.toCanvas(
+            event.getHistoricalX(index, history),
+            event.getHistoricalY(index, history),
+            mapped,
+        )
+        return mapped[1]
+    }
+
+    private fun canvasUnits(screenPx: Float): Float {
+        val current = viewTransform.scale
+        return if (current == 0f) screenPx else screenPx / current
+    }
+
+    private fun mapPointsToScreen(points: FloatArray, count: Int) {
+        for (i in 0 until count) {
+            viewTransform.toScreen(points[i * 2], points[i * 2 + 1], mapped)
+            points[i * 2] = mapped[0]
+            points[i * 2 + 1] = mapped[1]
+        }
+    }
+
+    private fun sameCenter(a: Float, b: Float): Boolean {
+        if (a.isNaN() && b.isNaN()) return true
+        return a == b
+    }
+
+    private fun invalidateCanvasRect(
+        left: Float,
+        top: Float,
+        right: Float,
+        bottom: Float,
+        screenPad: Float,
+    ) {
+        val current = viewTransform.scale
+        val screenLeft = left * current + viewTransform.tx - screenPad
+        val screenTop = top * current + viewTransform.ty - screenPad
+        val screenRight = right * current + viewTransform.tx + screenPad
+        val screenBottom = bottom * current + viewTransform.ty + screenPad
+        @Suppress("DEPRECATION")
+        invalidate(
+            screenLeft.toInt(),
+            screenTop.toInt(),
+            screenRight.toInt() + 1,
+            screenBottom.toInt() + 1,
         )
     }
 
