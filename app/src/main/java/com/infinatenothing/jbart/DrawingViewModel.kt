@@ -13,6 +13,7 @@ import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewmodel.CreationExtras
 import com.infinatenothing.jbart.canvas.ViewTransform
 import com.infinatenothing.jbart.model.BrushSettings
+import com.infinatenothing.jbart.model.CanvasLimits
 import com.infinatenothing.jbart.model.ColorMath
 import com.infinatenothing.jbart.model.ColorSettings
 import com.infinatenothing.jbart.model.ColorTarget
@@ -81,6 +82,8 @@ class DrawingViewModel(
     var pending by mutableStateOf<DrawObject?>(null)
         private set
     var revision by mutableIntStateOf(0)
+        private set
+    var fitNonce by mutableIntStateOf(0)
         private set
 
     @Volatile
@@ -305,6 +308,61 @@ class DrawingViewModel(
         scheduleSave()
     }
 
+    fun newCanvas(width: Int, height: Int, background: Int) {
+        if (!CanvasLimits.withinCap(width, height)) return
+        cancelInFlightFill?.invoke()
+        synchronized(lock) {
+            pending = null
+            document.objects.clear()
+            document.width = width
+            document.height = height
+            document.backgroundColor = opaque(background)
+            history.replace(emptyList(), emptyList())
+            viewScale = 1f
+            viewCenterX = null
+            viewCenterY = null
+            savedState.remove<Float>(KEY_VIEW_SCALE)
+            savedState.remove<Float>(KEY_VIEW_CENTER_X)
+            savedState.remove<Float>(KEY_VIEW_CENTER_Y)
+            fitNonce++
+            revision++
+        }
+        scheduleSave()
+        log("new canvas ${width}x$height background=${ColorMath.toHex(opaque(background))}")
+    }
+
+    fun clearCanvas() {
+        cancelInFlightFill?.invoke()
+        synchronized(lock) {
+            val staged = pending
+            if (staged != null) {
+                pending = null
+                document.objects.add(staged)
+                history.push(staged)
+                rememberUsedColor(staged)
+            }
+            val start = document.objects.indexOfLast { it is DrawObject.Clear } + 1
+            if (start < document.objects.size) {
+                document.objects.add(DrawObject.Clear)
+                history.push(DrawObject.Clear)
+            }
+            revision++
+        }
+        scheduleSave()
+        log("clear objects=${document.objects.size} undo=${history.undoCount}")
+    }
+
+    fun setBackgroundColor(color: Int) {
+        val next = opaque(color)
+        synchronized(lock) {
+            if (document.backgroundColor == next) return
+            document.backgroundColor = next
+            revision++
+        }
+        scheduleSave()
+        log("background=${ColorMath.toHex(next)}")
+    }
+
     fun undo() {
         if (fillBusy) return
         synchronized(lock) {
@@ -338,6 +396,10 @@ class DrawingViewModel(
         val snapshot = synchronized(lock) {
             saveGeneration++
             captureLocked()
+        }
+        if (!CanvasLimits.withinCap(snapshot.width, snapshot.height)) {
+            log("save onStop skipped size=${snapshot.width}x${snapshot.height}")
+            return
         }
         val pending = io.submit {
             synchronized(saveLock) {
@@ -493,6 +555,7 @@ class DrawingViewModel(
             synchronized(saveLock) {
                 if (generation != saveGeneration) return@execute
                 val snapshot = synchronized(lock) { captureLocked() }
+                if (!CanvasLimits.withinCap(snapshot.width, snapshot.height)) return@execute
                 try {
                     store.save(snapshot)
                     log(
@@ -572,6 +635,7 @@ class DrawingViewModel(
         return when (obj) {
             is DrawObject.Shape -> "kind=${obj.kind} rotation=${obj.rotationDeg} box=${obj.x1},${obj.y1},${obj.x2},${obj.y2}"
             is DrawObject.Line -> "line ${obj.x1},${obj.y1},${obj.x2},${obj.y2}"
+            is DrawObject.Clear -> "clear"
             else -> obj.tool.name
         }
     }

@@ -22,8 +22,10 @@ import android.view.ViewConfiguration
 import android.widget.Toast
 import com.infinatenothing.jbart.R
 import com.infinatenothing.jbart.model.BrushSettings
+import com.infinatenothing.jbart.model.CanvasLimits
 import com.infinatenothing.jbart.model.ColorMath
 import com.infinatenothing.jbart.model.DrawObject
+import com.infinatenothing.jbart.model.visibleObjects
 import com.infinatenothing.jbart.model.DrawingDocument
 import com.infinatenothing.jbart.model.EyedropperMath
 import com.infinatenothing.jbart.model.InputType
@@ -40,7 +42,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
- * White background composited under a transparent ink bitmap.
+ * Document background composited under a transparent ink bitmap.
  * Brush strokes are built opaque on a scratch bitmap and blitted once with the stroke alpha,
  * so a stroke does not darken where it crosses itself. A shape is drawn the same way:
  * opaque on the scratch bitmap, then blitted once with the brush alpha.
@@ -261,6 +263,8 @@ class DrawingView(context: Context) : View(context) {
     private var viewScaleRequest = 1f
     private var viewCenterXRequest = Float.NaN
     private var viewCenterYRequest = Float.NaN
+    private var fitNonce = 0
+    private var appliedFitNonce = 0
     private var navigating = false
     private var navFrozen = false
     private var navFocusX = 0f
@@ -301,48 +305,24 @@ class DrawingView(context: Context) : View(context) {
 
     fun zoomOut() = stepZoom(1f / ViewTransform.STEP)
 
+    /** Drops an in-progress stroke so a new or cleared canvas cannot commit it. */
+    fun abandonInput() {
+        cancelOutstandingFill()
+        dropLiveGesture()
+        clearScratch()
+        invalidate()
+    }
+
+    fun setFitNonce(nonce: Int) {
+        fitNonce = nonce
+        applyPendingFit()
+    }
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         if (w <= 0 || h <= 0) return
-        val existing = ink
-        if (existing != null && existing.width == w && existing.height == h && scratch != null) return
-        cancelOutstandingFill()
-        existing?.recycle()
-        scratch?.recycle()
-        val created = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val scratchBitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        ink = created
-        inkCanvas = Canvas(created)
-        scratch = scratchBitmap
-        scratchCanvas = Canvas(scratchBitmap)
-        // Canvas coordinates are view pixels. A smaller view clips; a larger one leaves
-        // empty space. Strokes are not scaled.
-        document?.let { doc ->
-            doc.width = w
-            doc.height = h
-            doc.bitmap = created
-        }
-        if (drawing) {
-            drawing = false
-            stylusActive = false
-            activePointerId = MotionEvent.INVALID_POINTER_ID
-            strokePoints.clear()
-        }
-        if (pendingDrag) {
-            pendingDrag = false
-            if (lineDragOrigin != null) {
-                pendingLine = lineDragOrigin
-                lineDragOrigin = null
-                lineHandle = null
-            } else {
-                pendingShape = dragOrigin ?: pendingShape
-                dragOrigin = null
-                dragHandle = null
-            }
-            stylusActive = false
-            activePointerId = MotionEvent.INVALID_POINTER_ID
-        }
-        renderAll()
+        if (ensureCanvasBitmaps()) renderAll()
         applyViewRequest(publish = !viewCenterXRequest.isNaN() && !viewCenterYRequest.isNaN())
+        applyPendingFit()
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -399,13 +379,14 @@ class DrawingView(context: Context) : View(context) {
         Log.d(TAG, "renderAll")
         val canvas = inkCanvas ?: return
         canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
-        for (obj in document?.objects.orEmpty()) {
+        for (obj in visibleObjects(document?.objects.orEmpty())) {
             when (obj) {
                 is DrawObject.Stroke -> stampBrush(obj.points, obj.baseWidthPx, obj.alpha, obj.inputType, obj.color)
                 is DrawObject.EraseStroke -> stampErase(obj.points, obj.baseWidthPx, obj.inputType)
                 is DrawObject.Line -> stampLine(obj.x1, obj.y1, obj.x2, obj.y2, obj.color, obj.widthPx, obj.alpha)
                 is DrawObject.Shape -> stampShape(obj)
                 is DrawObject.Fill -> stampFill(obj)
+                is DrawObject.Clear -> Unit
             }
         }
         clearScratch()
@@ -481,10 +462,8 @@ class DrawingView(context: Context) : View(context) {
     fun sync(source: DrawingDocument, revision: Int) {
         document = source
         if (width <= 0 || height <= 0) return
-        source.width = width
-        source.height = height
-        ink?.let { source.bitmap = it }
-        if (renderedRevision != revision) {
+        val recreated = ensureCanvasBitmaps()
+        if (recreated || renderedRevision != revision) {
             renderAll()
             renderedRevision = revision
         }
@@ -2079,6 +2058,75 @@ class DrawingView(context: Context) : View(context) {
             dp(ViewTransform.MIN_VISIBLE_DP),
         )
         syncMatrix()
+    }
+
+    private fun ensureCanvasBitmaps(): Boolean {
+        val doc = document ?: return false
+        if (doc.width <= 0 || doc.height <= 0) {
+            if (!CanvasLimits.withinCap(width, height)) return false
+            doc.width = width
+            doc.height = height
+        } else if (!CanvasLimits.withinCap(doc.width, doc.height)) {
+            return false
+        }
+        val existing = ink
+        if (existing != null && !existing.isRecycled &&
+            existing.width == doc.width && existing.height == doc.height && scratch != null
+        ) {
+            doc.bitmap = existing
+            return false
+        }
+        cancelOutstandingFill()
+        dropLiveGesture()
+        existing?.recycle()
+        scratch?.recycle()
+        val created = Bitmap.createBitmap(doc.width, doc.height, Bitmap.Config.ARGB_8888)
+        val scratchBitmap = Bitmap.createBitmap(doc.width, doc.height, Bitmap.Config.ARGB_8888)
+        ink = created
+        inkCanvas = Canvas(created)
+        scratch = scratchBitmap
+        scratchCanvas = Canvas(scratchBitmap)
+        doc.bitmap = created
+        return true
+    }
+
+    private fun dropLiveGesture() {
+        if (drawing) {
+            drawing = false
+            stylusActive = false
+            activePointerId = MotionEvent.INVALID_POINTER_ID
+            strokePoints.clear()
+        }
+        if (pendingDrag) {
+            pendingDrag = false
+            if (lineDragOrigin != null) {
+                pendingLine = lineDragOrigin
+                lineDragOrigin = null
+                lineHandle = null
+            } else {
+                pendingShape = dragOrigin ?: pendingShape
+                dragOrigin = null
+                dragHandle = null
+            }
+            stylusActive = false
+            activePointerId = MotionEvent.INVALID_POINTER_ID
+        }
+    }
+
+    private fun applyPendingFit() {
+        if (fitNonce == appliedFitNonce || width <= 0 || height <= 0) return
+        if ((document?.width ?: 0) <= 0) return
+        appliedFitNonce = fitNonce
+        viewTransform.fit(
+            canvasWidth(),
+            canvasHeight(),
+            width.toFloat(),
+            height.toFloat(),
+            dp(ViewTransform.FIT_MARGIN_DP),
+        )
+        constrainView()
+        publishView()
+        invalidate()
     }
 
     private fun applyViewRequest(publish: Boolean) {

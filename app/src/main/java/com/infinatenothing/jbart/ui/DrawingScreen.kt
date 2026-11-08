@@ -1,12 +1,16 @@
 package com.infinatenothing.jbart.ui
 
 import android.app.Activity
+import android.app.ActivityManager
 import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -14,6 +18,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -28,11 +34,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.boundsInWindow
@@ -43,7 +51,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.zIndex
+import com.infinatenothing.jbart.model.CanvasLimits
 import com.infinatenothing.jbart.DrawingViewModel
 import com.infinatenothing.jbart.R
 import com.infinatenothing.jbart.canvas.DrawingView
@@ -67,6 +77,12 @@ fun DrawingScreen(model: DrawingViewModel) {
     }
     var settingsTool by remember { mutableStateOf<Tool?>(null) }
     var colorPickerOpen by remember { mutableStateOf(false) }
+    var canvasNew by remember { mutableStateOf(false) }
+    var canvasClear by remember { mutableStateOf(false) }
+    var canvasBackground by remember { mutableStateOf(false) }
+    val memoryClassMb = remember {
+        activity.getSystemService(ActivityManager::class.java)?.memoryClass ?: 192
+    }
     val revision = model.revision
     val pending = model.pending
     val fillBusy = model.fillBusy
@@ -117,6 +133,7 @@ fun DrawingScreen(model: DrawingViewModel) {
                 )
                 view.bindPending(pending)
                 view.sync(model.document, revision)
+                view.setFitNonce(model.fitNonce)
             },
         )
     }
@@ -197,6 +214,29 @@ fun DrawingScreen(model: DrawingViewModel) {
             zoomScale = model.viewScale,
             onZoomIn = { canvasView[0]?.zoomIn() },
             onZoomOut = { canvasView[0]?.zoomOut() },
+            onNewCanvas = {
+                canvasView[0]?.abandonInput()
+                settingsTool = null
+                colorPickerOpen = false
+                canvasBackground = false
+                canvasClear = false
+                canvasNew = true
+            },
+            onClearCanvas = {
+                canvasView[0]?.abandonInput()
+                settingsTool = null
+                colorPickerOpen = false
+                canvasBackground = false
+                canvasNew = false
+                canvasClear = true
+            },
+            onBackgroundColor = {
+                settingsTool = null
+                colorPickerOpen = false
+                canvasNew = false
+                canvasClear = false
+                canvasBackground = true
+            },
             modifier = modifier,
         )
     }
@@ -274,6 +314,177 @@ fun DrawingScreen(model: DrawingViewModel) {
         ) {
             colorPicker(Modifier.fillMaxWidth().padding(bottom = 24.dp))
         }
+    }
+    if (canvasNew) {
+        NewCanvasDialog(
+            viewWidth = canvasView[0]?.width ?: 0,
+            viewHeight = canvasView[0]?.height ?: 0,
+            memoryClassMb = memoryClassMb,
+            recent = model.colorSettings.recent,
+            onDismiss = { canvasNew = false },
+            onCreate = { width, height, color ->
+                canvasView[0]?.abandonInput()
+                canvasNew = false
+                model.newCanvas(width, height, color)
+            },
+        )
+    }
+    if (canvasClear) {
+        AlertDialog(
+            onDismissRequest = { canvasClear = false },
+            containerColor = Color.White,
+            titleContentColor = Color.Black,
+            textContentColor = Color.Black,
+            title = { Text(stringResource(R.string.canvas_clear_title)) },
+            text = { Text(stringResource(R.string.canvas_clear_body)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        canvasView[0]?.abandonInput()
+                        canvasClear = false
+                        model.clearCanvas()
+                    },
+                    modifier = Modifier.testTag("canvas_clear_confirm"),
+                ) {
+                    Text(stringResource(R.string.canvas_confirm))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { canvasClear = false }) {
+                    Text(stringResource(R.string.canvas_cancel))
+                }
+            },
+        )
+    }
+    if (canvasBackground) {
+        Dialog(onDismissRequest = { canvasBackground = false }) {
+            ColorPickerPanel(
+                stroke = model.document.backgroundColor,
+                fill = model.document.backgroundColor,
+                target = ColorTarget.STROKE,
+                recent = model.colorSettings.recent,
+                onTarget = {},
+                onStroke = {},
+                onFill = {},
+                onEyedropper = {},
+                singleColor = model.document.backgroundColor,
+                onSingleColor = { model.setBackgroundColor(it) },
+                modifier = Modifier.fillMaxWidth().heightIn(max = 560.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun NewCanvasDialog(
+    viewWidth: Int,
+    viewHeight: Int,
+    memoryClassMb: Int,
+    recent: List<Int>,
+    onDismiss: () -> Unit,
+    onCreate: (Int, Int, Int) -> Unit,
+) {
+    val choices = CanvasLimits.PRESETS.mapNotNull { preset ->
+        val width = if (preset.screen) viewWidth else preset.width
+        val height = if (preset.screen) viewHeight else preset.height
+        if (preset.screen && (viewWidth <= 0 || viewHeight <= 0)) return@mapNotNull null
+        if (!CanvasLimits.offered(width, height, memoryClassMb)) return@mapNotNull null
+        Triple(preset, width, height)
+    }
+    var selected by remember { mutableIntStateOf(0) }
+    var color by remember { mutableIntStateOf(0xFFFFFFFF.toInt()) }
+    var picking by remember { mutableStateOf(false) }
+    val index = selected.coerceIn(0, (choices.size - 1).coerceAtLeast(0))
+    if (picking) {
+        Dialog(onDismissRequest = { picking = false }) {
+            ColorPickerPanel(
+                stroke = color,
+                fill = color,
+                target = ColorTarget.STROKE,
+                recent = recent,
+                onTarget = {},
+                onStroke = {},
+                onFill = {},
+                onEyedropper = {},
+                singleColor = color,
+                onSingleColor = { color = it },
+                modifier = Modifier.fillMaxWidth().heightIn(max = 560.dp),
+            )
+        }
+        return
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color.White,
+        titleContentColor = Color.Black,
+        textContentColor = Color.Black,
+        title = { Text(stringResource(R.string.canvas_new_title)) },
+        text = {
+            Column {
+                Text(stringResource(R.string.canvas_new_body))
+                Spacer(Modifier.height(12.dp))
+                choices.forEachIndexed { itemIndex, (preset, width, height) ->
+                    val label = presetLabel(preset, width, height)
+                    Row(
+                        modifier = Modifier
+                            .testTag(if (preset.screen) "canvas_preset_screen" else "canvas_preset_${width}x$height")
+                            .heightIn(min = 48.dp)
+                            .selectable(
+                                selected = itemIndex == index,
+                                role = Role.RadioButton,
+                                onClick = { selected = itemIndex },
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(text = label, color = Color.Black)
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                TextButton(
+                    onClick = { picking = true },
+                    modifier = Modifier.testTag("canvas_new_background"),
+                ) {
+                    Box(
+                        Modifier
+                            .size(24.dp)
+                            .background(Color(color))
+                            .border(1.dp, Color.Black),
+                    )
+                    Text(
+                        text = stringResource(R.string.canvas_background),
+                        modifier = Modifier.padding(start = 8.dp),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val choice = choices.getOrNull(index) ?: return@TextButton
+                    onCreate(choice.second, choice.third, color)
+                },
+                enabled = choices.isNotEmpty(),
+                modifier = Modifier.testTag("canvas_new_confirm"),
+            ) {
+                Text(stringResource(R.string.canvas_create))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.canvas_cancel))
+            }
+        },
+    )
+}
+
+@Composable
+private fun presetLabel(preset: CanvasLimits.Preset, width: Int, height: Int): String {
+    return when {
+        preset.screen -> stringResource(R.string.canvas_preset_screen)
+        width == 2048 && height == 1536 -> stringResource(R.string.canvas_preset_2048)
+        width == 2560 && height == 1600 -> stringResource(R.string.canvas_preset_2560)
+        width == 2048 && height == 2048 -> stringResource(R.string.canvas_preset_square)
+        else -> "$width x $height"
     }
 }
 

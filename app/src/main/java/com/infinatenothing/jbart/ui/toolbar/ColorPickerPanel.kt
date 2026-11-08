@@ -64,8 +64,10 @@ fun ColorPickerPanel(
     onFill: (Int) -> Unit,
     onEyedropper: () -> Unit,
     modifier: Modifier = Modifier,
+    singleColor: Int? = null,
+    onSingleColor: (Int) -> Unit = {},
 ) {
-    val active = if (target == ColorTarget.FILL) fill else stroke
+    val active = singleColor ?: if (target == ColorTarget.FILL) fill else stroke
     var hsv by remember { mutableStateOf(hsvOf(active)) }
     LaunchedEffect(active, target) {
         val shown = ColorMath.hsvToArgb(hsv.h, hsv.s, hsv.v)
@@ -73,7 +75,9 @@ fun ColorPickerPanel(
     }
     val shown = ColorMath.hsvToArgb(hsv.h, hsv.s, hsv.v)
     val apply: (Int) -> Unit = { color ->
-        if (target == ColorTarget.FILL) onFill(color) else onStroke(color)
+        if (singleColor != null) onSingleColor(color)
+        else if (target == ColorTarget.FILL) onFill(color)
+        else onStroke(color)
     }
     val names = presetNames()
     Column(
@@ -85,29 +89,33 @@ fun ColorPickerPanel(
             .padding(16.dp),
     ) {
         Text(
-            text = stringResource(R.string.action_color),
+            text = stringResource(
+                if (singleColor != null) R.string.canvas_background else R.string.action_color,
+            ),
             color = Color.Black,
             fontSize = 20.sp,
             fontWeight = FontWeight.Bold,
         )
-        Spacer(Modifier.height(12.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TargetChip(
-                tag = "color_target_stroke",
-                label = stringResource(R.string.color_stroke),
-                color = stroke,
-                selected = target == ColorTarget.STROKE,
-                onClick = { onTarget(ColorTarget.STROKE) },
-                modifier = Modifier.weight(1f),
-            )
-            TargetChip(
-                tag = "color_target_fill",
-                label = stringResource(R.string.color_fill),
-                color = fill,
-                selected = target == ColorTarget.FILL,
-                onClick = { onTarget(ColorTarget.FILL) },
-                modifier = Modifier.weight(1f),
-            )
+        if (singleColor == null) {
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TargetChip(
+                    tag = "color_target_stroke",
+                    label = stringResource(R.string.color_stroke),
+                    color = stroke,
+                    selected = target == ColorTarget.STROKE,
+                    onClick = { onTarget(ColorTarget.STROKE) },
+                    modifier = Modifier.weight(1f),
+                )
+                TargetChip(
+                    tag = "color_target_fill",
+                    label = stringResource(R.string.color_fill),
+                    color = fill,
+                    selected = target == ColorTarget.FILL,
+                    onClick = { onTarget(ColorTarget.FILL) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
         }
         Spacer(Modifier.height(12.dp))
         ColorSettings.PALETTE.chunked(4).forEach { row ->
@@ -181,9 +189,17 @@ fun ColorPickerPanel(
                 }
             }
         }
-        Spacer(Modifier.height(12.dp))
-        val eyedropper = stringResource(R.string.color_eyedropper)
-        Row(
+        if (singleColor == null) {
+            Spacer(Modifier.height(12.dp))
+            EyedropperRow(onEyedropper)
+        }
+    }
+}
+
+@Composable
+private fun EyedropperRow(onEyedropper: () -> Unit) {
+    val eyedropper = stringResource(R.string.color_eyedropper)
+    Row(
             modifier = Modifier
                 .testTag("color_eyedropper")
                 .fillMaxWidth()
@@ -202,7 +218,6 @@ fun ColorPickerPanel(
                 fontSize = 16.sp,
             )
         }
-    }
 }
 
 @Composable

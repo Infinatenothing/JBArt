@@ -73,7 +73,7 @@ class HistoryManager(
             total += when (entry) {
                 is DrawObject.Stroke -> entry.points.size
                 is DrawObject.EraseStroke -> entry.points.size
-                is DrawObject.Line, is DrawObject.Shape -> 0
+                is DrawObject.Line, is DrawObject.Shape, is DrawObject.Clear -> 0
                 is DrawObject.Fill -> entry.runs.size / 3
             }
         }

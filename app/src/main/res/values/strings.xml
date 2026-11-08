@@ -50,4 +50,19 @@
     <string name="zoom_in">Zoom in</string>
     <string name="zoom_out">Zoom out</string>
     <string name="zoom_percent">%1$d%%</string>
+    <string name="action_canvas">Canvas</string>
+    <string name="canvas_new">New</string>
+    <string name="canvas_clear">Clear</string>
+    <string name="canvas_background">Background color</string>
+    <string name="canvas_new_title">New canvas</string>
+    <string name="canvas_new_body">This starts a blank canvas and clears undo history.</string>
+    <string name="canvas_clear_title">Clear canvas</string>
+    <string name="canvas_clear_body">This removes the drawing. Undo brings it back.</string>
+    <string name="canvas_create">Create</string>
+    <string name="canvas_confirm">Clear</string>
+    <string name="canvas_cancel">Cancel</string>
+    <string name="canvas_preset_screen">Screen</string>
+    <string name="canvas_preset_2048">2048 x 1536</string>
+    <string name="canvas_preset_2560">2560 x 1600</string>
+    <string name="canvas_preset_square">Square 2048</string>
 </resources>

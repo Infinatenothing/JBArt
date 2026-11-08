@@ -5,6 +5,7 @@ import com.infinatenothing.jbart.model.BrushSettings
 import com.infinatenothing.jbart.model.ColorSettings
 import com.infinatenothing.jbart.model.ColorTarget
 import com.infinatenothing.jbart.model.DrawObject
+import com.infinatenothing.jbart.model.HistoryLimits
 import com.infinatenothing.jbart.model.HistoryManager
 import com.infinatenothing.jbart.model.InputType
 import com.infinatenothing.jbart.model.ShapeKind
@@ -532,7 +533,7 @@ class DrawingViewModelTest {
         model.updateView(2.5f, 40f, 80f)
         model.commit(stroke(3f))
         model.onHostStop()
-        assertEquals(6, com.infinatenothing.jbart.session.SessionCodec.VERSION)
+        assertEquals(7, com.infinatenothing.jbart.session.SessionCodec.VERSION)
         val fromHandle = model(
             SavedStateHandle(
                 mapOf(
@@ -553,6 +554,70 @@ class DrawingViewModelTest {
         assertEquals(1, fromSession.document.objects.size)
     }
 
+    @Test
+    fun clearIsOneUndoStepAndRedoClearsAgain() {
+        val model = model()
+        model.commit(stroke(1f))
+        model.commit(stroke(2f))
+        model.clearCanvas()
+        assertTrue(model.document.objects.last() is DrawObject.Clear)
+        assertEquals(3, model.history.undoCount)
+        model.undo()
+        assertEquals(2, model.document.objects.size)
+        assertTrue(model.document.objects.none { it is DrawObject.Clear })
+        model.redo()
+        assertTrue(model.document.objects.last() is DrawObject.Clear)
+    }
+
+    @Test
+    fun clearStillTrimsToTheHistoryCap() {
+        val model = model()
+        repeat(HistoryLimits.MAX_ENTRIES) { model.commit(stroke(1f)) }
+        model.clearCanvas()
+        assertTrue(model.history.undoCount <= HistoryLimits.MAX_ENTRIES)
+        assertTrue(model.document.objects.last() is DrawObject.Clear)
+        model.undo()
+        assertFalse(model.document.objects.last() is DrawObject.Clear)
+    }
+
+    @Test
+    fun newCanvasResetsHistorySizeAndView() {
+        val handle = SavedStateHandle()
+        val model = model(handle)
+        model.commit(stroke(1f))
+        model.updateView(2f, 5f, 6f)
+        model.newCanvas(0, 0, ColorSettings.RED)
+        assertEquals(1, model.document.objects.size)
+        model.newCanvas(5000, 5000, ColorSettings.RED)
+        assertEquals(1, model.document.objects.size)
+        model.newCanvas(2048, 1536, ColorSettings.BLUE)
+        assertEquals(2048, model.document.width)
+        assertEquals(1536, model.document.height)
+        assertEquals(ColorSettings.BLUE, model.document.backgroundColor)
+        assertTrue(model.document.objects.isEmpty())
+        assertEquals(0, model.history.undoCount)
+        assertEquals(0, model.history.redoCount)
+        assertNull(model.pending)
+        assertEquals(1, model.fitNonce)
+        assertNull(model.viewCenterX)
+        assertNull(handle.get<Float>(DrawingViewModel.KEY_VIEW_SCALE))
+    }
+
+    @Test
+    fun backgroundColorIsImmediateAndNotAHistoryEntry() {
+        val store = CodecSessionStore()
+        val model = model(store = store)
+        model.commit(stroke(1f))
+        model.setBackgroundColor(ColorSettings.RED)
+        assertEquals(1, model.history.undoCount)
+        assertEquals(ColorSettings.RED, model.document.backgroundColor)
+        model.onHostStop()
+        val restored = model(SavedStateHandle(), store)
+        assertEquals(ColorSettings.RED, restored.document.backgroundColor)
+        assertEquals(100, restored.document.width)
+        assertEquals(1, restored.document.objects.size)
+    }
+
     private fun model(
         savedState: SavedStateHandle = SavedStateHandle(),
         store: SessionStore = MemorySessionStore(),
@@ -565,7 +630,12 @@ class DrawingViewModelTest {
             debounceMs = 0,
             log = {},
             history = history,
-        )
+        ).also { created ->
+            if (created.document.width <= 0 || created.document.height <= 0) {
+                created.document.width = 100
+                created.document.height = 100
+            }
+        }
     }
 
     private fun line() = DrawObject.Line(

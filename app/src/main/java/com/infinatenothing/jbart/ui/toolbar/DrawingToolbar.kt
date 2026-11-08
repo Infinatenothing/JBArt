@@ -24,6 +24,7 @@ import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.ChangeHistory
+import androidx.compose.material.icons.filled.CropFree
 import androidx.compose.material.icons.filled.CropSquare
 import androidx.compose.material.icons.filled.FormatColorFill
 import androidx.compose.material.icons.filled.NorthEast
@@ -33,6 +34,8 @@ import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Straighten
 import androidx.compose.material.icons.outlined.CleaningServices
 import androidx.compose.material3.BottomAppBar
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -41,6 +44,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -104,8 +111,12 @@ fun DrawingToolbar(
     zoomScale: Float,
     onZoomIn: () -> Unit,
     onZoomOut: () -> Unit,
+    onNewCanvas: () -> Unit,
+    onClearCanvas: () -> Unit,
+    onBackgroundColor: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var canvasMenu by remember { mutableStateOf(false) }
     val items = listOf(
         Item(
             tag = "tool_brush",
@@ -184,6 +195,14 @@ fun DrawingToolbar(
             onClick = onRedo,
         ),
         Item(
+            tag = "tool_canvas",
+            description = stringResource(R.string.action_canvas),
+            icon = Icons.Filled.CropFree,
+            selected = canvasMenu,
+            enabled = true,
+            onClick = { canvasMenu = true },
+        ),
+        Item(
             tag = "tool_export",
             description = stringResource(R.string.action_export),
             icon = Icons.Filled.MoreVert,
@@ -208,6 +227,24 @@ fun DrawingToolbar(
                 ToolButton(item)
                 if (item.tag == "tool_color" && colorPopup != null) {
                     ColorPopup(onDismiss = onDismissColor, content = colorPopup)
+                }
+                if (item.tag == "tool_canvas") {
+                    CanvasMenu(
+                        expanded = canvasMenu,
+                        onDismiss = { canvasMenu = false },
+                        onNew = {
+                            canvasMenu = false
+                            onNewCanvas()
+                        },
+                        onClear = {
+                            canvasMenu = false
+                            onClearCanvas()
+                        },
+                        onBackground = {
+                            canvasMenu = false
+                            onBackgroundColor()
+                        },
+                    )
                 }
                 if (anchorSettings && item.settingsTool != null && item.settingsTool == settingsTool) {
                     SettingsPopup(
@@ -277,6 +314,33 @@ fun DrawingToolbar(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun CanvasMenu(
+    expanded: Boolean,
+    onDismiss: () -> Unit,
+    onNew: () -> Unit,
+    onClear: () -> Unit,
+    onBackground: () -> Unit,
+) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        DropdownMenuItem(
+            text = { Text(stringResource(R.string.canvas_new)) },
+            onClick = onNew,
+            modifier = Modifier.testTag("canvas_new"),
+        )
+        DropdownMenuItem(
+            text = { Text(stringResource(R.string.canvas_clear)) },
+            onClick = onClear,
+            modifier = Modifier.testTag("canvas_clear"),
+        )
+        DropdownMenuItem(
+            text = { Text(stringResource(R.string.canvas_background)) },
+            onClick = onBackground,
+            modifier = Modifier.testTag("canvas_background"),
+        )
     }
 }
 

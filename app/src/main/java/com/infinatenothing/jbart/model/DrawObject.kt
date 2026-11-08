@@ -104,4 +104,9 @@ sealed interface DrawObject {
             return result
         }
     }
+
+    /** Blank slate for replay. Size and background stay on the document. */
+    data object Clear : DrawObject {
+        override val tool: Tool = Tool.BRUSH
+    }
 }
