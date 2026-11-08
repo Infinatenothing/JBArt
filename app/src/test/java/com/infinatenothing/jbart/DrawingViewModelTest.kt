@@ -521,6 +521,38 @@ class DrawingViewModelTest {
         assertEquals(fill, fromSession.document.objects.single())
     }
 
+    @Test
+    fun viewSurvivesSavedStateAndStaysOutOfTheSession() {
+        val store = CodecSessionStore()
+        val handle = SavedStateHandle()
+        val model = model(handle, store)
+        assertEquals(1f, model.viewScale, 0f)
+        assertEquals(null, model.viewCenterX)
+        assertEquals(null, model.viewCenterY)
+        model.updateView(2.5f, 40f, 80f)
+        model.commit(stroke(3f))
+        model.onHostStop()
+        assertEquals(6, com.infinatenothing.jbart.session.SessionCodec.VERSION)
+        val fromHandle = model(
+            SavedStateHandle(
+                mapOf(
+                    DrawingViewModel.KEY_VIEW_SCALE to handle.get<Float>(DrawingViewModel.KEY_VIEW_SCALE),
+                    DrawingViewModel.KEY_VIEW_CENTER_X to handle.get<Float>(DrawingViewModel.KEY_VIEW_CENTER_X),
+                    DrawingViewModel.KEY_VIEW_CENTER_Y to handle.get<Float>(DrawingViewModel.KEY_VIEW_CENTER_Y),
+                ),
+            ),
+            MemorySessionStore(),
+        )
+        assertEquals(2.5f, fromHandle.viewScale, 0f)
+        assertEquals(40f, fromHandle.viewCenterX)
+        assertEquals(80f, fromHandle.viewCenterY)
+        val fromSession = model(SavedStateHandle(), store)
+        assertEquals(1f, fromSession.viewScale, 0f)
+        assertEquals(null, fromSession.viewCenterX)
+        assertEquals(null, fromSession.viewCenterY)
+        assertEquals(1, fromSession.document.objects.size)
+    }
+
     private fun model(
         savedState: SavedStateHandle = SavedStateHandle(),
         store: SessionStore = MemorySessionStore(),

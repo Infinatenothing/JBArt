@@ -235,6 +235,18 @@ class DrawingScreenTest {
     }
 
     @Test
+    fun zoomButtonsStepTheScaleAndShowThePercent() {
+        val model = ViewModelProvider(rule.activity)[DrawingViewModel::class.java]
+        rule.onNodeWithTag("zoom_label").assertIsDisplayed()
+        rule.onNodeWithContentDescription("Zoom in").assertIsDisplayed().performClick()
+        rule.waitForIdle()
+        assertEquals(1.25f, model.viewScale, 0.001f)
+        rule.onNodeWithContentDescription("Zoom out").performClick()
+        rule.waitForIdle()
+        assertEquals(1f, model.viewScale, 0.001f)
+    }
+
+    @Test
     fun eraserSettingsPopupShowsSizeSliderOnly() {
         rule.onNodeWithTag("tool_eraser").performClick()
         rule.onNodeWithTag("tool_eraser").performClick()

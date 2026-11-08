@@ -1,9 +1,9 @@
 package com.infinatenothing.jbart.model
 
 /**
- * Maps a view point into bitmap pixels. Today this is a uniform scale, which is
- * identity when the view and bitmap are the same size. A later zoom can replace
- * the scale with a matrix without changing the sampler.
+ * Maps a screen point into bitmap pixels. The view-size overload is the identity
+ * scale used when the view and bitmap match. Zoom passes scale and translation
+ * from [com.infinatenothing.jbart.canvas.ViewTransform] and does not change [sample].
  */
 object EyedropperMath {
     fun toBitmapCoords(
@@ -22,6 +22,37 @@ object EyedropperMath {
         val maxY = (bmpH - 1).coerceAtLeast(0).toFloat()
         out[0] = scaledX.coerceIn(0f, maxX)
         out[1] = scaledY.coerceIn(0f, maxY)
+    }
+
+    /**
+     * Screen point through scale and translation.
+     * [clamp] pulls the sample onto the nearest bitmap pixel. Fill passes false and
+     * ignores a point that lands outside the canvas.
+     */
+    fun toBitmapCoords(
+        x: Float,
+        y: Float,
+        scale: Float,
+        translateX: Float,
+        translateY: Float,
+        bmpW: Int,
+        bmpH: Int,
+        out: FloatArray,
+        clamp: Boolean,
+    ) {
+        require(out.size >= 2)
+        val safeScale = if (scale == 0f) 1f else scale
+        val canvasX = (x - translateX) / safeScale
+        val canvasY = (y - translateY) / safeScale
+        if (!clamp) {
+            out[0] = canvasX
+            out[1] = canvasY
+            return
+        }
+        val maxX = (bmpW - 1).coerceAtLeast(0).toFloat()
+        val maxY = (bmpH - 1).coerceAtLeast(0).toFloat()
+        out[0] = canvasX.coerceIn(0f, maxX)
+        out[1] = canvasY.coerceIn(0f, maxY)
     }
 
     /** Samples [pixels] in row-major order and composites the pixel over [bg]. */

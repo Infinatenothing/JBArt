@@ -47,4 +47,7 @@
     <string name="settings_eraser">Eraser</string>
     <string name="settings_size">Size %1$.1f dp</string>
     <string name="settings_opacity">Opacity %1$d%%</string>
+    <string name="zoom_in">Zoom in</string>
+    <string name="zoom_out">Zoom out</string>
+    <string name="zoom_percent">%1$d%%</string>
 </resources>

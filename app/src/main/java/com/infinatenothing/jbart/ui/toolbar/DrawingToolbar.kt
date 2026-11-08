@@ -3,6 +3,7 @@ package com.infinatenothing.jbart.ui.toolbar
 import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
@@ -36,6 +37,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
@@ -51,6 +53,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
@@ -62,6 +66,7 @@ import com.infinatenothing.jbart.model.BrushSettings
 import com.infinatenothing.jbart.model.ColorMath
 import com.infinatenothing.jbart.model.ShapeKind
 import com.infinatenothing.jbart.model.Tool
+import kotlin.math.roundToInt
 
 @Composable
 fun DrawingToolbar(
@@ -96,6 +101,9 @@ fun DrawingToolbar(
     colorPopup: (@Composable () -> Unit)?,
     onOpenColor: () -> Unit,
     onDismissColor: () -> Unit,
+    zoomScale: Float,
+    onZoomIn: () -> Unit,
+    onZoomOut: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val items = listOf(
@@ -250,6 +258,7 @@ fun DrawingToolbar(
                 Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
                     buttons()
                 }
+                ZoomCluster(zoomScale, onZoomIn, onZoomOut, stacked = true)
             }
             VerticalDivider(modifier = Modifier.fillMaxHeight(), thickness = 1.dp, color = outline)
         }
@@ -257,8 +266,14 @@ fun DrawingToolbar(
         Column(placed.fillMaxWidth()) {
             HorizontalDivider(thickness = 1.dp, color = outline)
             BottomAppBar(containerColor = container) {
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-                    buttons()
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(Modifier.weight(1f).horizontalScroll(rememberScrollState())) {
+                        buttons()
+                    }
+                    ZoomCluster(zoomScale, onZoomIn, onZoomOut, stacked = false)
                 }
             }
         }
@@ -422,6 +437,57 @@ private fun ShapeFlagToggle(
         contentAlignment = Alignment.Center,
     ) {
         Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.size(24.dp))
+    }
+}
+
+@Composable
+private fun ZoomCluster(
+    scale: Float,
+    onZoomIn: () -> Unit,
+    onZoomOut: () -> Unit,
+    stacked: Boolean,
+) {
+    val percent = (scale * 100f).roundToInt()
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            text = stringResource(R.string.zoom_percent, percent),
+            color = MaterialTheme.colorScheme.onSurface,
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.testTag("zoom_label"),
+        )
+        if (stacked) {
+            ZoomSymbol("+", stringResource(R.string.zoom_in), "zoom_in", onZoomIn)
+            ZoomSymbol("-", stringResource(R.string.zoom_out), "zoom_out", onZoomOut)
+        } else {
+            Row {
+                ZoomSymbol("+", stringResource(R.string.zoom_in), "zoom_in", onZoomIn)
+                ZoomSymbol("-", stringResource(R.string.zoom_out), "zoom_out", onZoomOut)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ZoomSymbol(
+    symbol: String,
+    description: String,
+    tag: String,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .testTag(tag)
+            .size(48.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick)
+            .semantics { contentDescription = description },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = symbol,
+            color = MaterialTheme.colorScheme.onSurface,
+            style = MaterialTheme.typography.titleLarge,
+        )
     }
 }
 

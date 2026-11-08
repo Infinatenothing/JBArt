@@ -2,6 +2,7 @@ package com.infinatenothing.jbart
 
 import android.util.Log
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -10,6 +11,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewmodel.CreationExtras
+import com.infinatenothing.jbart.canvas.ViewTransform
 import com.infinatenothing.jbart.model.BrushSettings
 import com.infinatenothing.jbart.model.ColorMath
 import com.infinatenothing.jbart.model.ColorSettings
@@ -69,6 +71,12 @@ class DrawingViewModel(
     var fillGapDp by mutableIntStateOf(2)
         private set
     var fillBusy by mutableStateOf(false)
+        private set
+    var viewScale by mutableFloatStateOf(1f)
+        private set
+    var viewCenterX by mutableStateOf<Float?>(null)
+        private set
+    var viewCenterY by mutableStateOf<Float?>(null)
         private set
     var pending by mutableStateOf<DrawObject?>(null)
         private set
@@ -188,6 +196,18 @@ class DrawingViewModel(
     fun setFillRunning(busy: Boolean) {
         if (fillBusy == busy) return
         fillBusy = busy
+    }
+
+    /** View center is a canvas point. Absent centers mean the identity transform. */
+    fun updateView(scale: Float, centerX: Float, centerY: Float) {
+        val next = scale.coerceIn(ViewTransform.MIN_SCALE, ViewTransform.MAX_SCALE)
+        if (viewScale == next && viewCenterX == centerX && viewCenterY == centerY) return
+        viewScale = next
+        viewCenterX = centerX
+        viewCenterY = centerY
+        savedState[KEY_VIEW_SCALE] = next
+        savedState[KEY_VIEW_CENTER_X] = centerX
+        savedState[KEY_VIEW_CENTER_Y] = centerY
     }
 
     fun updateFillColor(color: Int) {
@@ -385,6 +405,16 @@ class DrawingViewModel(
         colorSettings = savedColors(fromFile?.colors)
         fillTolerance = (savedState.get<Int>(KEY_FILL_TOLERANCE) ?: fromFile?.fillTolerance ?: 32).coerceIn(0, 255)
         fillGapDp = (savedState.get<Int>(KEY_FILL_GAP) ?: fromFile?.fillGapDp ?: 2).coerceIn(0, 10)
+        val savedScale = savedState.get<Float>(KEY_VIEW_SCALE)
+        val savedCenterX = savedState.get<Float>(KEY_VIEW_CENTER_X)
+        val savedCenterY = savedState.get<Float>(KEY_VIEW_CENTER_Y)
+        if (savedScale != null && savedCenterX != null && savedCenterY != null &&
+            savedScale.isFinite() && savedCenterX.isFinite() && savedCenterY.isFinite()
+        ) {
+            viewScale = savedScale.coerceIn(ViewTransform.MIN_SCALE, ViewTransform.MAX_SCALE)
+            viewCenterX = savedCenterX
+            viewCenterY = savedCenterY
+        }
         fillBusy = false
         eyedropperActive = false
         toolBeforeEyedropper = null
@@ -563,6 +593,9 @@ class DrawingViewModel(
         const val KEY_RECENT_COLORS = "recent_colors"
         const val KEY_FILL_TOLERANCE = "fill_tolerance"
         const val KEY_FILL_GAP = "fill_gap"
+        const val KEY_VIEW_SCALE = "view_scale"
+        const val KEY_VIEW_CENTER_X = "view_center_x"
+        const val KEY_VIEW_CENTER_Y = "view_center_y"
 
         fun factory(filesDir: File): ViewModelProvider.Factory {
             return object : ViewModelProvider.Factory {
