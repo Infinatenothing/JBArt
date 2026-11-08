@@ -508,6 +508,63 @@ class SessionCodecTest {
     }
 
     @Test
+    fun version7RoundTripKeepsClearInUndoAndRedo() {
+        val snapshot = SessionSnapshot(
+            width = 2560,
+            height = 1600,
+            backgroundColor = 0xFF112233.toInt(),
+            objects = listOf(stroke(1f), DrawObject.Clear, stroke(2f)),
+            undoCount = 3,
+            redo = listOf(DrawObject.Clear),
+            tool = Tool.BRUSH,
+            brush = BrushSettings(),
+            eraser = BrushSettings(),
+            fixedSize = true,
+        )
+        assertEquals(SessionLoad.Ok(snapshot), SessionCodec.decode(SessionCodec.encode(snapshot)))
+        val legacy = snapshot.copy(fixedSize = false)
+        val decoded = SessionCodec.decode(SessionCodec.encode(legacy)) as SessionLoad.Ok
+        assertFalse(decoded.snapshot.fixedSize)
+        assertEquals(DrawObject.Clear, decoded.snapshot.redo.single())
+    }
+
+    @Test
+    fun version6FileStillDecodesAsFixedCanvas() {
+        val bytes = ByteArrayOutputStream().also { out ->
+            DataOutputStream(out).use { data ->
+                writeV6Header(data)
+                data.writeInt(1)
+                data.writeByte(1)
+                data.writeInt(0xFF000000.toInt())
+                data.writeFloat(4f)
+                data.writeFloat(1f)
+                data.writeUTF("FINGER")
+                data.writeInt(1)
+                data.writeFloat(3f)
+                data.writeFloat(4f)
+                data.writeFloat(1f)
+                data.writeLong(1L)
+                data.writeInt(1)
+                data.writeInt(0)
+                data.writeBoolean(false)
+            }
+        }.toByteArray()
+        val loaded = SessionCodec.decode(bytes) as SessionLoad.Ok
+        assertEquals(8, loaded.snapshot.width)
+        assertEquals(8, loaded.snapshot.height)
+        assertTrue(loaded.snapshot.fixedSize)
+        assertEquals(1, loaded.snapshot.objects.size)
+        assertEquals(1, loaded.snapshot.undoCount)
+    }
+
+    @Test
+    fun oversizeOrEmptyCanvasIsRejected() {
+        assertEquals("canvas size", (SessionCodec.decode(sizeHeader(0, 10)) as SessionLoad.Failed).reason)
+        assertEquals("canvas size", (SessionCodec.decode(sizeHeader(4097, 10)) as SessionLoad.Failed).reason)
+        assertEquals("canvas size", (SessionCodec.decode(sizeHeader(4000, 4001)) as SessionLoad.Failed).reason)
+    }
+
+    @Test
     fun truncatedInputIsAnError() {
         val bytes = ByteArrayOutputStream().also { out ->
             DataOutputStream(out).use {
@@ -595,6 +652,17 @@ class SessionCodecTest {
         data.writeByte(0)
         data.writeInt(32)
         data.writeInt(2)
+    }
+
+    private fun sizeHeader(width: Int, height: Int): ByteArray {
+        return ByteArrayOutputStream().also { out ->
+            DataOutputStream(out).use { data ->
+                data.writeInt(SessionCodec.MAGIC)
+                data.writeInt(7)
+                data.writeInt(width)
+                data.writeInt(height)
+            }
+        }.toByteArray()
     }
 
     private fun header(version: Int): ByteArray {

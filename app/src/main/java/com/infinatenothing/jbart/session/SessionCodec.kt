@@ -1,6 +1,7 @@
 package com.infinatenothing.jbart.session
 
 import com.infinatenothing.jbart.model.BrushSettings
+import com.infinatenothing.jbart.model.CanvasLimits
 import com.infinatenothing.jbart.model.ColorSettings
 import com.infinatenothing.jbart.model.DrawObject
 import com.infinatenothing.jbart.model.HistoryLimits
@@ -33,6 +34,7 @@ data class SessionSnapshot(
     val colors: ColorSettings = ColorSettings(),
     val fillTolerance: Int = 32,
     val fillGapDp: Int = 2,
+    val fixedSize: Boolean = true,
 )
 
 sealed interface SessionLoad {
@@ -64,16 +66,21 @@ sealed interface SessionLoad {
  * dropped, and [SessionSnapshot.undoCount] is clamped to the objects that remain.
  * Tolerance defaults to 32 and the gap setting to 2. A run count above
  * [HistoryLimits.MAX_FILL_RUNS] fails the file. Runs out of order drop that fill only.
+ * Version 7 writes a size-mode byte after the fill settings (0 legacy, 1 fixed) and a
+ * [DrawObject.Clear] tag with no payload. Versions 1 to 6 load as fixed at their saved
+ * width and height. A width or height that is not positive, longer than
+ * [CanvasLimits.MAX_EDGE] on the long side, or over [CanvasLimits.MAX_PIXELS] fails the file.
  * Strokes keep canvas pixels. The file is an autosave, not a user document.
  */
 object SessionCodec {
     const val MAGIC = 0x4A425331
-    const val VERSION = 6
+    const val VERSION = 7
     private const val VERSION_LINE_PAYLOAD = 2
     private const val VERSION_SHAPE_PAYLOAD = 3
     private const val VERSION_SHAPE_ROTATION = 4
     private const val VERSION_COLORS = 5
     private const val VERSION_FILL = 6
+    private const val VERSION_CANVAS = 7
 
     var log: (String) -> Unit = {}
 
@@ -82,6 +89,7 @@ object SessionCodec {
     private const val LINE = 3
     private const val SHAPE = 4
     private const val FILL = 5
+    private const val CLEAR = 6
     private const val POINT_BYTES = 20
 
     fun encode(snapshot: SessionSnapshot): ByteArray {
@@ -102,6 +110,7 @@ object SessionCodec {
             writeColors(data, snapshot.colors)
             data.writeInt(snapshot.fillTolerance.coerceIn(0, 255))
             data.writeInt(snapshot.fillGapDp.coerceIn(0, 10))
+            data.writeByte(if (snapshot.fixedSize) CanvasLimits.MODE_FIXED else CanvasLimits.MODE_LEGACY)
             writeObjects(data, snapshot.objects)
             data.writeInt(snapshot.undoCount)
             writeObjects(data, snapshot.redo)
@@ -126,6 +135,7 @@ object SessionCodec {
         if (version !in 1..VERSION) return SessionLoad.Failed("unknown version $version")
         val width = data.readInt()
         val height = data.readInt()
+        if (!CanvasLimits.withinCap(width, height)) return SessionLoad.Failed("canvas size")
         val background = data.readInt()
         val tool = enumValue<Tool>(data.readUTF()) ?: return SessionLoad.Failed("corrupt")
         val brush = readBrush(data)
@@ -152,6 +162,15 @@ object SessionCodec {
         } else {
             fillTolerance = 32
             fillGapDp = 2
+        }
+        val fixedSize = if (version >= VERSION_CANVAS) {
+            when (data.readUnsignedByte()) {
+                CanvasLimits.MODE_LEGACY -> false
+                CanvasLimits.MODE_FIXED -> true
+                else -> return SessionLoad.Failed("corrupt")
+            }
+        } else {
+            true
         }
         val objects = readObjects(data, version)
         val undoCountRaw = data.readInt()
@@ -182,6 +201,7 @@ object SessionCodec {
                 colors = colors,
                 fillTolerance = fillTolerance,
                 fillGapDp = fillGapDp,
+                fixedSize = fixedSize,
             ),
         )
     }
@@ -286,6 +306,7 @@ object SessionCodec {
                 data.writeInt(count)
                 for (i in 0 until count * 3) data.writeInt(obj.runs[i])
             }
+            is DrawObject.Clear -> data.writeByte(CLEAR)
         }
     }
 
@@ -368,6 +389,7 @@ object SessionCodec {
                 null
             }
             FILL -> if (version >= VERSION_FILL) readFill(data) else null
+            CLEAR -> if (version >= VERSION_CANVAS) DrawObject.Clear else throw EOFException()
             else -> throw EOFException()
         }
     }
