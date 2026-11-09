@@ -29,7 +29,7 @@ import androidx.compose.material.icons.filled.CropSquare
 import androidx.compose.material.icons.filled.FormatColorFill
 import androidx.compose.material.icons.filled.NorthEast
 import androidx.compose.material.icons.outlined.Circle
-import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.IosShare
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Straighten
 import androidx.compose.material.icons.outlined.CleaningServices
@@ -114,6 +114,7 @@ fun DrawingToolbar(
     onNewCanvas: () -> Unit,
     onClearCanvas: () -> Unit,
     onBackgroundColor: () -> Unit,
+    onExport: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var canvasMenu by remember { mutableStateOf(false) }
@@ -205,10 +206,10 @@ fun DrawingToolbar(
         Item(
             tag = "tool_export",
             description = stringResource(R.string.action_export),
-            icon = Icons.Filled.MoreVert,
+            icon = Icons.Filled.IosShare,
             selected = false,
             enabled = true,
-            onClick = {},
+            onClick = onExport,
         ),
     )
     SideEffect {

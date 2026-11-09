@@ -1,9 +1,13 @@
 package com.infinatenothing.jbart.canvas
 
+import android.app.Activity
+import android.content.ClipData
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.net.Uri
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
@@ -21,6 +25,11 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.widget.Toast
 import com.infinatenothing.jbart.R
+import com.infinatenothing.jbart.export.ExportFormat
+import com.infinatenothing.jbart.export.ExportNaming
+import com.infinatenothing.jbart.export.ExportRenderer
+import com.infinatenothing.jbart.export.ExportSource
+import com.infinatenothing.jbart.export.ExportWriter
 import com.infinatenothing.jbart.model.BrushSettings
 import com.infinatenothing.jbart.model.CanvasLimits
 import com.infinatenothing.jbart.model.ColorMath
@@ -35,6 +44,7 @@ import com.infinatenothing.jbart.model.Tool
 import com.infinatenothing.jbart.model.clampBrushSettings
 import com.infinatenothing.jbart.model.colorForShape
 import com.infinatenothing.jbart.model.opaque
+import java.time.LocalDateTime
 import java.util.concurrent.Executors
 import kotlin.math.hypot
 import kotlin.math.max
@@ -242,9 +252,13 @@ class DrawingView(context: Context) : View(context) {
     private val fillExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "jbart-fill").apply { isDaemon = true }
     }
+    private val exportExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "jbart-export").apply { isDaemon = true }
+    }
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     private var fillGeneration = 0
     private var fillInFlight = false
+    private var exportInFlight = false
     private var fillTracking = false
     private var fillMoved = false
     private var fillStartX = 0f
@@ -497,11 +511,117 @@ class DrawingView(context: Context) : View(context) {
     override fun onDetachedFromWindow() {
         cancelOutstandingFill()
         fillExecutor.shutdownNow()
+        exportExecutor.shutdownNow()
         super.onDetachedFromWindow()
     }
 
+    /**
+     * Commits a pending shape or line, then copies ink for a background export.
+     * Null when the canvas is not ready or a copy cannot be allocated.
+     */
+    fun exportSnapshot(): ExportSource? {
+        if (exportInFlight || fillInFlight) return null
+        commitPendingOnly()
+        val source = ink ?: return null
+        val doc = document ?: return null
+        if (doc.width <= 0 || doc.height <= 0) return null
+        val copy = try {
+            source.copy(Bitmap.Config.ARGB_8888, false)
+        } catch (oom: OutOfMemoryError) {
+            Log.d(TAG, "export failed oom")
+            null
+        } ?: return null
+        exportInFlight = true
+        return ExportSource(copy, doc.width, doc.height, doc.backgroundColor)
+    }
+
+    fun startExport(
+        format: ExportFormat,
+        quality: Int,
+        transparent: Boolean,
+        share: Boolean,
+        onBusy: (Boolean) -> Unit,
+    ) {
+        val source = exportSnapshot()
+        if (source == null) {
+            Log.d(TAG, "export failed no bitmap")
+            Toast.makeText(context.applicationContext, R.string.export_failed, Toast.LENGTH_SHORT).show()
+            onBusy(false)
+            return
+        }
+        val appContext = context.applicationContext
+        val started = System.nanoTime()
+        val keepAlpha = transparent && format == ExportFormat.PNG
+        try {
+            exportExecutor.execute {
+                var rendered: Bitmap? = null
+                try {
+                    rendered = ExportRenderer.render(
+                        source.ink,
+                        source.width,
+                        source.height,
+                        source.background,
+                        keepAlpha,
+                    )
+                    val name = ExportNaming.fileName(LocalDateTime.now(), format)
+                    val uri = if (share) {
+                        ExportWriter.writeShareFile(appContext, rendered, format, quality, name)
+                    } else {
+                        ExportWriter.saveToMediaStore(appContext, rendered, format, quality, name)
+                    }
+                    val elapsedMs = (System.nanoTime() - started) / 1_000_000L
+                    Log.d(TAG, "export done format=${format.name} ms=$elapsedMs")
+                    mainHandler.post { deliverExport(onBusy, share, uri, format) }
+                } catch (thrown: Throwable) {
+                    Log.d(TAG, "export failed ${thrown.javaClass.simpleName} ${thrown.message}")
+                    mainHandler.post {
+                        exportInFlight = false
+                        if (isAttachedToWindow) onBusy(false)
+                        Toast.makeText(appContext, R.string.export_failed, Toast.LENGTH_SHORT).show()
+                    }
+                } finally {
+                    if (!source.ink.isRecycled) source.ink.recycle()
+                    val image = rendered
+                    if (image != null && !image.isRecycled) image.recycle()
+                }
+            }
+        } catch (thrown: Throwable) {
+            if (!source.ink.isRecycled) source.ink.recycle()
+            exportInFlight = false
+            Log.d(TAG, "export failed ${thrown.javaClass.simpleName} ${thrown.message}")
+            Toast.makeText(appContext, R.string.export_failed, Toast.LENGTH_SHORT).show()
+            onBusy(false)
+        }
+    }
+
+    private fun deliverExport(onBusy: (Boolean) -> Unit, share: Boolean, uri: Uri, format: ExportFormat) {
+        exportInFlight = false
+        val appContext = context.applicationContext
+        if (isAttachedToWindow) onBusy(false)
+        if (!share) {
+            Toast.makeText(appContext, R.string.export_saved, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = format.mimeType
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            clipData = ClipData.newUri(appContext.contentResolver, "export", uri)
+        }
+        val chooser = Intent.createChooser(send, appContext.getString(R.string.export_share))
+        chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        val launch = if (isAttachedToWindow) context else appContext
+        if (launch !is Activity) chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            launch.startActivity(chooser)
+        } catch (thrown: Exception) {
+            Log.d(TAG, "export failed share ${thrown.message}")
+            Toast.makeText(appContext, R.string.export_failed, Toast.LENGTH_SHORT).show()
+        }
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (fillInFlight) return true
+        if (fillInFlight || exportInFlight) return true
         logEvent(event)
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             parent?.requestDisallowInterceptTouchEvent(true)

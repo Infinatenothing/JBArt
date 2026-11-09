@@ -65,4 +65,15 @@
     <string name="canvas_preset_2048">2048 x 1536</string>
     <string name="canvas_preset_2560">2560 x 1600</string>
     <string name="canvas_preset_square">Square 2048</string>
+    <string name="export_title">Export</string>
+    <string name="export_format_png">PNG</string>
+    <string name="export_format_jpeg">JPEG</string>
+    <string name="export_format_bmp">BMP</string>
+    <string name="export_quality">Quality %1$d</string>
+    <string name="export_transparent">Transparent background</string>
+    <string name="export_save">Save</string>
+    <string name="export_share">Share</string>
+    <string name="export_saved">Saved to Pictures/JBArt</string>
+    <string name="export_failed">Export failed</string>
+    <string name="export_cancel">Cancel</string>
 </resources>
