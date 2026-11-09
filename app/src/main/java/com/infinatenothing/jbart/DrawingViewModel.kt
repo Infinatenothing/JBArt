@@ -12,6 +12,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewmodel.CreationExtras
 import com.infinatenothing.jbart.canvas.ViewTransform
+import com.infinatenothing.jbart.export.ExportFormat
 import com.infinatenothing.jbart.model.BrushSettings
 import com.infinatenothing.jbart.model.CanvasLimits
 import com.infinatenothing.jbart.model.ColorMath
@@ -84,6 +85,12 @@ class DrawingViewModel(
     var revision by mutableIntStateOf(0)
         private set
     var fitNonce by mutableIntStateOf(0)
+        private set
+    var exportFormat by mutableStateOf(ExportFormat.PNG)
+        private set
+    var exportQuality by mutableIntStateOf(90)
+        private set
+    var exportTransparent by mutableStateOf(false)
         private set
 
     @Volatile
@@ -273,6 +280,21 @@ class DrawingViewModel(
         }
         log("pending edit ${describe(obj)}")
         scheduleSave()
+    }
+
+    fun updateExportFormat(value: ExportFormat) {
+        exportFormat = value
+        writeSettings()
+    }
+
+    fun updateExportQuality(value: Int) {
+        exportQuality = value.coerceIn(50, 100)
+        writeSettings()
+    }
+
+    fun updateExportTransparent(value: Boolean) {
+        exportTransparent = value
+        writeSettings()
     }
 
     fun commitPending() {
@@ -467,6 +489,9 @@ class DrawingViewModel(
         colorSettings = savedColors(fromFile?.colors)
         fillTolerance = (savedState.get<Int>(KEY_FILL_TOLERANCE) ?: fromFile?.fillTolerance ?: 32).coerceIn(0, 255)
         fillGapDp = (savedState.get<Int>(KEY_FILL_GAP) ?: fromFile?.fillGapDp ?: 2).coerceIn(0, 10)
+        exportFormat = savedExportFormat()
+        exportQuality = (savedState.get<Int>(KEY_EXPORT_QUALITY) ?: 90).coerceIn(50, 100)
+        exportTransparent = savedState.get<Boolean>(KEY_EXPORT_TRANSPARENT) ?: false
         val savedScale = savedState.get<Float>(KEY_VIEW_SCALE)
         val savedCenterX = savedState.get<Float>(KEY_VIEW_CENTER_X)
         val savedCenterY = savedState.get<Float>(KEY_VIEW_CENTER_Y)
@@ -511,6 +536,11 @@ class DrawingViewModel(
         )
     }
 
+    private fun savedExportFormat(): ExportFormat {
+        val name = savedState.get<String>(KEY_EXPORT_FORMAT) ?: return ExportFormat.PNG
+        return ExportFormat.entries.firstOrNull { it.name == name } ?: ExportFormat.PNG
+    }
+
     private fun savedShapeKind(fallback: ShapeKind?): ShapeKind? {
         val name = savedState.get<String>(KEY_SHAPE_KIND) ?: return fallback
         return ShapeKind.entries.firstOrNull { it.name == name } ?: fallback
@@ -542,6 +572,9 @@ class DrawingViewModel(
         savedState[KEY_RECENT_COLORS] = colorSettings.recent.toIntArray()
         savedState[KEY_FILL_TOLERANCE] = fillTolerance
         savedState[KEY_FILL_GAP] = fillGapDp
+        savedState[KEY_EXPORT_FORMAT] = exportFormat.name
+        savedState[KEY_EXPORT_QUALITY] = exportQuality
+        savedState[KEY_EXPORT_TRANSPARENT] = exportTransparent
     }
 
     private fun scheduleSave() {
@@ -660,6 +693,9 @@ class DrawingViewModel(
         const val KEY_VIEW_SCALE = "view_scale"
         const val KEY_VIEW_CENTER_X = "view_center_x"
         const val KEY_VIEW_CENTER_Y = "view_center_y"
+        const val KEY_EXPORT_FORMAT = "export_format"
+        const val KEY_EXPORT_QUALITY = "export_quality"
+        const val KEY_EXPORT_TRANSPARENT = "export_transparent"
 
         fun factory(filesDir: File): ViewModelProvider.Factory {
             return object : ViewModelProvider.Factory {

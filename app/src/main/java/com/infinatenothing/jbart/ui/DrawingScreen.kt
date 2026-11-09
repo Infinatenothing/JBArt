@@ -1,8 +1,15 @@
 package com.infinatenothing.jbart.ui
 
+import android.Manifest
 import android.app.Activity
 import android.app.ActivityManager
+import android.content.pm.PackageManager
+import android.os.Build
 import android.util.Log
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -80,6 +87,8 @@ fun DrawingScreen(model: DrawingViewModel) {
     var canvasNew by remember { mutableStateOf(false) }
     var canvasClear by remember { mutableStateOf(false) }
     var canvasBackground by remember { mutableStateOf(false) }
+    var exportOpen by remember { mutableStateOf(false) }
+    var exportBusy by remember { mutableStateOf(false) }
     val memoryClassMb = remember {
         activity.getSystemService(ActivityManager::class.java)?.memoryClass ?: 192
     }
@@ -136,6 +145,46 @@ fun DrawingScreen(model: DrawingViewModel) {
                 view.setFitNonce(model.fitNonce)
             },
         )
+    }
+    fun beginExport(share: Boolean) {
+        exportOpen = false
+        val view = canvasView[0]
+        if (view == null) {
+            Toast.makeText(activity, R.string.export_failed, Toast.LENGTH_SHORT).show()
+            return
+        }
+        exportBusy = true
+        view.startExport(
+            format = model.exportFormat,
+            quality = model.exportQuality,
+            transparent = model.exportTransparent,
+            share = share,
+            onBusy = { exportBusy = it },
+        )
+    }
+    val exportPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            beginExport(share = false)
+        } else {
+            Log.d("DrawingView", "export failed permission")
+            Toast.makeText(activity, R.string.export_failed, Toast.LENGTH_SHORT).show()
+        }
+    }
+    fun requestExport(share: Boolean) {
+        val needsWrite = !share &&
+            Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
+            ContextCompat.checkSelfPermission(
+                activity,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE,
+            ) != PackageManager.PERMISSION_GRANTED
+        if (needsWrite) {
+            exportOpen = false
+            exportPermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else {
+            beginExport(share)
+        }
     }
     val colorPicker = @Composable { modifier: Modifier ->
         ColorPickerPanel(
@@ -237,6 +286,16 @@ fun DrawingScreen(model: DrawingViewModel) {
                 canvasClear = false
                 canvasBackground = true
             },
+            onExport = {
+                if (!exportBusy) {
+                    settingsTool = null
+                    colorPickerOpen = false
+                    canvasNew = false
+                    canvasClear = false
+                    canvasBackground = false
+                    exportOpen = true
+                }
+            },
             modifier = modifier,
         )
     }
@@ -253,12 +312,16 @@ fun DrawingScreen(model: DrawingViewModel) {
     if (model.eyedropperActive) {
         BackHandler(onBack = cancelEyedropper)
     }
+    if (exportBusy) {
+        BackHandler { }
+    }
     if (compact) {
         Scaffold(bottomBar = { toolbar(false, Modifier) }) { padding ->
             Box(Modifier.padding(padding).fillMaxSize()) {
                 canvas(Modifier.fillMaxSize())
                 if (model.eyedropperActive) EyedropperCancel(cancelEyedropper)
                 if (fillBusy) FillBusy(Modifier.align(Alignment.TopCenter))
+                if (exportBusy) FillBusy(Modifier.align(Alignment.TopCenter), tag = "export_busy")
             }
         }
     } else {
@@ -269,6 +332,7 @@ fun DrawingScreen(model: DrawingViewModel) {
                     canvas(Modifier.fillMaxSize())
                     if (model.eyedropperActive) EyedropperCancel(cancelEyedropper)
                     if (fillBusy) FillBusy(Modifier.align(Alignment.TopCenter))
+                    if (exportBusy) FillBusy(Modifier.align(Alignment.TopCenter), tag = "export_busy")
                 }
             }
         }
@@ -354,6 +418,19 @@ fun DrawingScreen(model: DrawingViewModel) {
                     Text(stringResource(R.string.canvas_cancel))
                 }
             },
+        )
+    }
+    if (exportOpen) {
+        ExportDialog(
+            format = model.exportFormat,
+            quality = model.exportQuality,
+            transparent = model.exportTransparent,
+            onFormat = { model.updateExportFormat(it) },
+            onQuality = { model.updateExportQuality(it) },
+            onTransparent = { model.updateExportTransparent(it) },
+            onSave = { requestExport(share = false) },
+            onShare = { requestExport(share = true) },
+            onDismiss = { exportOpen = false },
         )
     }
     if (canvasBackground) {
@@ -489,14 +566,14 @@ private fun presetLabel(preset: CanvasLimits.Preset, width: Int, height: Int): S
 }
 
 @Composable
-private fun FillBusy(modifier: Modifier = Modifier) {
+private fun FillBusy(modifier: Modifier = Modifier, tag: String = "fill_busy") {
     Box(
         modifier = modifier
             .padding(12.dp)
             .size(48.dp)
             .background(Color.White)
             .border(2.dp, Color.Black)
-            .testTag("fill_busy"),
+            .testTag(tag),
         contentAlignment = Alignment.Center,
     ) {
         CircularProgressIndicator(

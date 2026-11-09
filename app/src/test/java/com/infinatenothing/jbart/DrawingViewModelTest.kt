@@ -1,6 +1,7 @@
 package com.infinatenothing.jbart
 
 import androidx.lifecycle.SavedStateHandle
+import com.infinatenothing.jbart.export.ExportFormat
 import com.infinatenothing.jbart.model.BrushSettings
 import com.infinatenothing.jbart.model.ColorSettings
 import com.infinatenothing.jbart.model.ColorTarget
@@ -616,6 +617,35 @@ class DrawingViewModelTest {
         assertEquals(ColorSettings.RED, restored.document.backgroundColor)
         assertEquals(100, restored.document.width)
         assertEquals(1, restored.document.objects.size)
+    }
+
+    @Test
+    fun exportSettingsDefaultToPngAndSurviveSavedStateOnly() {
+        val store = MemorySessionStore()
+        val handle = SavedStateHandle()
+        val model = model(handle, store)
+        assertEquals(ExportFormat.PNG, model.exportFormat)
+        assertEquals(90, model.exportQuality)
+        assertFalse(model.exportTransparent)
+        model.updateExportFormat(ExportFormat.JPEG)
+        model.updateExportQuality(40)
+        assertEquals(50, model.exportQuality)
+        model.updateExportQuality(60)
+        model.updateExportTransparent(true)
+        val restored = model(
+            SavedStateHandle(
+                mapOf(
+                    DrawingViewModel.KEY_EXPORT_FORMAT to handle.get<String>(DrawingViewModel.KEY_EXPORT_FORMAT),
+                    DrawingViewModel.KEY_EXPORT_QUALITY to handle.get<Int>(DrawingViewModel.KEY_EXPORT_QUALITY),
+                    DrawingViewModel.KEY_EXPORT_TRANSPARENT to handle.get<Boolean>(DrawingViewModel.KEY_EXPORT_TRANSPARENT),
+                ),
+            ),
+            MemorySessionStore(),
+        )
+        assertEquals(ExportFormat.JPEG, restored.exportFormat)
+        assertEquals(60, restored.exportQuality)
+        assertTrue(restored.exportTransparent)
+        assertTrue(restored.document.objects.isEmpty())
     }
 
     private fun model(

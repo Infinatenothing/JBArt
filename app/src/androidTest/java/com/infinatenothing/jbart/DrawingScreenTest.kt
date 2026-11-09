@@ -36,6 +36,29 @@ class DrawingScreenTest {
     val rule = createAndroidComposeRule<MainActivity>()
 
     @Test
+    fun exportDialogShowsFormatQualityAndTransparent() {
+        rule.onNodeWithTag("tool_export").performScrollTo().performClick()
+        rule.onNodeWithTag("export_dialog").assertIsDisplayed()
+        rule.onNodeWithTag("export_format_png").assertIsDisplayed().assertIsSelected()
+        rule.onNodeWithTag("export_format_jpeg").assertIsDisplayed()
+        rule.onNodeWithTag("export_format_bmp").assertIsDisplayed()
+        rule.onNodeWithTag("export_transparent").assertIsDisplayed()
+        rule.onNodeWithTag("export_save").assertIsDisplayed()
+        rule.onNodeWithTag("export_share").assertIsDisplayed()
+        assertTrue(rule.onAllNodesWithTag("export_quality_slider").fetchSemanticsNodes().isEmpty())
+        rule.onNodeWithTag("export_format_jpeg").performClick()
+        rule.onNodeWithTag("export_quality_slider").assertIsDisplayed()
+        assertTrue(rule.onAllNodesWithTag("export_transparent").fetchSemanticsNodes().isEmpty())
+        rule.onNodeWithTag("export_format_bmp").performClick()
+        assertTrue(rule.onAllNodesWithTag("export_quality_slider").fetchSemanticsNodes().isEmpty())
+        assertTrue(rule.onAllNodesWithTag("export_transparent").fetchSemanticsNodes().isEmpty())
+        rule.onNodeWithTag("export_format_png").performClick()
+        rule.onNodeWithTag("export_transparent").assertIsDisplayed()
+        rule.onNodeWithTag("export_cancel").performClick()
+        assertTrue(rule.onAllNodesWithTag("export_dialog").fetchSemanticsNodes().isEmpty())
+    }
+
+    @Test
     fun toolbarIsDisplayed() {
         rule.onNodeWithTag("toolbar").assertIsDisplayed()
         rule.onNodeWithContentDescription("Brush").assertIsDisplayed()
