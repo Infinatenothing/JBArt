@@ -29,6 +29,10 @@ import com.infinatenothing.jbart.export.ExportFormat
 import com.infinatenothing.jbart.export.ExportNaming
 import com.infinatenothing.jbart.export.ExportRenderer
 import com.infinatenothing.jbart.export.ExportSource
+import com.infinatenothing.jbart.export.PdfWriter
+import com.infinatenothing.jbart.export.SvgWriter
+import com.infinatenothing.jbart.export.VectorOp
+import com.infinatenothing.jbart.export.VectorScene
 import com.infinatenothing.jbart.export.ExportWriter
 import com.infinatenothing.jbart.model.BrushSettings
 import com.infinatenothing.jbart.model.CanvasLimits
@@ -44,6 +48,9 @@ import com.infinatenothing.jbart.model.Tool
 import com.infinatenothing.jbart.model.clampBrushSettings
 import com.infinatenothing.jbart.model.colorForShape
 import com.infinatenothing.jbart.model.opaque
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.io.OutputStream
 import java.time.LocalDateTime
 import java.util.concurrent.Executors
 import kotlin.math.hypot
@@ -393,7 +400,17 @@ class DrawingView(context: Context) : View(context) {
         Log.d(TAG, "renderAll")
         val canvas = inkCanvas ?: return
         canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
-        for (obj in visibleObjects(document?.objects.orEmpty())) {
+        replay(visibleObjects(document?.objects.orEmpty()))
+        clearScratch()
+        paintPendingShape()
+        paintPendingLine()
+        ink?.prepareToDraw()
+        invalidate()
+    }
+
+    /** Stamps [objects] onto the current ink canvas. */
+    private fun replay(objects: List<DrawObject>) {
+        for (obj in objects) {
             when (obj) {
                 is DrawObject.Stroke -> stampBrush(obj.points, obj.baseWidthPx, obj.alpha, obj.inputType, obj.color)
                 is DrawObject.EraseStroke -> stampErase(obj.points, obj.baseWidthPx, obj.inputType)
@@ -403,11 +420,6 @@ class DrawingView(context: Context) : View(context) {
                 is DrawObject.Clear -> Unit
             }
         }
-        clearScratch()
-        paintPendingShape()
-        paintPendingLine()
-        ink?.prepareToDraw()
-        invalidate()
     }
 
     /** Shows the model pending shape or line. A null value discards the local edit. */
@@ -519,12 +531,19 @@ class DrawingView(context: Context) : View(context) {
      * Commits a pending shape or line, then copies ink for a background export.
      * Null when the canvas is not ready or a copy cannot be allocated.
      */
-    fun exportSnapshot(): ExportSource? {
+    fun exportSnapshot(vector: Boolean = false): ExportSource? {
         if (exportInFlight || fillInFlight) return null
         commitPendingOnly()
         val source = ink ?: return null
         val doc = document ?: return null
         if (doc.width <= 0 || doc.height <= 0) return null
+        if (vector) {
+            val objects = ArrayList(visibleObjects(doc.objects))
+            val count = VectorScene.flattenCount(objects)
+            val flattened = if (count == 0) null else replayPrefix(objects.subList(0, count)) ?: return null
+            exportInFlight = true
+            return ExportSource(flattened, doc.width, doc.height, doc.backgroundColor, objects)
+        }
         val copy = try {
             source.copy(Bitmap.Config.ARGB_8888, false)
         } catch (oom: OutOfMemoryError) {
@@ -535,6 +554,33 @@ class DrawingView(context: Context) : View(context) {
         return ExportSource(copy, doc.width, doc.height, doc.backgroundColor)
     }
 
+    /**
+     * Replays [objects] into a new bitmap with the same stamp code as the screen, by pointing
+     * ink at it for the duration. Runs on the main thread, so nothing else sees the swap.
+     */
+    private fun replayPrefix(objects: List<DrawObject>): Bitmap? {
+        val source = ink ?: return null
+        val out = try {
+            Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
+        } catch (oom: OutOfMemoryError) {
+            Log.d(TAG, "export failed oom")
+            return null
+        }
+        val savedCanvas = inkCanvas
+        ink = out
+        inkCanvas = Canvas(out)
+        try {
+            replay(objects)
+        } finally {
+            ink = source
+            inkCanvas = savedCanvas
+            clearScratch()
+            paintPendingShape()
+            paintPendingLine()
+        }
+        return out
+    }
+
     fun startExport(
         format: ExportFormat,
         quality: Int,
@@ -542,7 +588,7 @@ class DrawingView(context: Context) : View(context) {
         share: Boolean,
         onBusy: (Boolean) -> Unit,
     ) {
-        val source = exportSnapshot()
+        val source = exportSnapshot(format.isVector)
         if (source == null) {
             Log.d(TAG, "export failed no bitmap")
             Toast.makeText(context.applicationContext, R.string.export_failed, Toast.LENGTH_SHORT).show()
@@ -551,26 +597,37 @@ class DrawingView(context: Context) : View(context) {
         }
         val appContext = context.applicationContext
         val started = System.nanoTime()
-        val keepAlpha = transparent && (format == ExportFormat.PNG || format == ExportFormat.GIF)
+        val keepAlpha = transparent && format.supportsTransparent
+        val minArrowHeadPx = minArrowHeadPx()
         try {
             exportExecutor.execute {
                 var rendered: Bitmap? = null
                 try {
-                    rendered = ExportRenderer.render(
-                        source.ink,
-                        source.width,
-                        source.height,
-                        source.background,
-                        keepAlpha,
-                    )
-                    if (keepAlpha && format == ExportFormat.GIF) {
-                        ExportRenderer.flattenForGif(rendered, source.background)
-                    }
                     val name = ExportNaming.fileName(LocalDateTime.now(), format)
-                    val uri = if (share) {
-                        ExportWriter.writeShareFile(appContext, rendered, format, quality, name)
+                    val uri = if (format.isVector) {
+                        val write = vectorWriter(source, format, keepAlpha, minArrowHeadPx)
+                        if (share) {
+                            ExportWriter.writeShareFile(appContext, name, write)
+                        } else {
+                            ExportWriter.saveToMediaStore(appContext, format, name, write)
+                        }
                     } else {
-                        ExportWriter.saveToMediaStore(appContext, rendered, format, quality, name)
+                        val image = ExportRenderer.render(
+                            source.ink!!,
+                            source.width,
+                            source.height,
+                            source.background,
+                            keepAlpha,
+                        )
+                        rendered = image
+                        if (keepAlpha && format == ExportFormat.GIF) {
+                            ExportRenderer.flattenForGif(image, source.background)
+                        }
+                        if (share) {
+                            ExportWriter.writeShareFile(appContext, image, format, quality, name)
+                        } else {
+                            ExportWriter.saveToMediaStore(appContext, image, format, quality, name)
+                        }
                     }
                     val elapsedMs = (System.nanoTime() - started) / 1_000_000L
                     Log.d(TAG, "export done format=${format.name} ms=$elapsedMs")
@@ -583,17 +640,41 @@ class DrawingView(context: Context) : View(context) {
                         Toast.makeText(appContext, R.string.export_failed, Toast.LENGTH_SHORT).show()
                     }
                 } finally {
-                    if (!source.ink.isRecycled) source.ink.recycle()
+                    source.ink?.let { if (!it.isRecycled) it.recycle() }
                     val image = rendered
                     if (image != null && !image.isRecycled) image.recycle()
                 }
             }
         } catch (thrown: Throwable) {
-            if (!source.ink.isRecycled) source.ink.recycle()
+            source.ink?.let { if (!it.isRecycled) it.recycle() }
             exportInFlight = false
             Log.d(TAG, "export failed ${thrown.javaClass.simpleName} ${thrown.message}")
             Toast.makeText(appContext, R.string.export_failed, Toast.LENGTH_SHORT).show()
             onBusy(false)
+        }
+    }
+
+    /** Runs on the export thread. Fill bitmaps are made one at a time and recycled. */
+    private fun vectorWriter(
+        source: ExportSource,
+        format: ExportFormat,
+        transparent: Boolean,
+        minArrowHeadPx: Float,
+    ): (OutputStream) -> Unit = { out ->
+        val ops = VectorScene.build(source.objects, source.width, source.height, minArrowHeadPx)
+        if (format == ExportFormat.PDF) {
+            PdfWriter.write(ops, source.width, source.height, source.background, source.ink, out)
+        } else {
+            SvgWriter.encode(ops, source.width, source.height, source.background, transparent, { op ->
+                val bitmap = if (op is VectorOp.FillImage) PdfWriter.fillBitmap(op) else source.ink!!
+                try {
+                    val bytes = ByteArrayOutputStream()
+                    if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, bytes)) throw IOException("png")
+                    bytes.toByteArray()
+                } finally {
+                    if (bitmap !== source.ink) bitmap.recycle()
+                }
+            }, out)
         }
     }
 
@@ -602,7 +683,8 @@ class DrawingView(context: Context) : View(context) {
         val appContext = context.applicationContext
         if (isAttachedToWindow) onBusy(false)
         if (!share) {
-            Toast.makeText(appContext, R.string.export_saved, Toast.LENGTH_SHORT).show()
+            val saved = if (ExportWriter.isImage(format)) R.string.export_saved else R.string.export_saved_documents
+            Toast.makeText(appContext, saved, Toast.LENGTH_SHORT).show()
             return
         }
         val send = Intent(Intent.ACTION_SEND).apply {

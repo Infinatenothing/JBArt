@@ -52,6 +52,8 @@ fun ExportDialog(
                 FormatRow(ExportFormat.JPEG, format, R.string.export_format_jpeg, "export_format_jpeg", onFormat)
                 FormatRow(ExportFormat.BMP, format, R.string.export_format_bmp, "export_format_bmp", onFormat)
                 FormatRow(ExportFormat.GIF, format, R.string.export_format_gif, "export_format_gif", onFormat)
+                FormatRow(ExportFormat.PDF, format, R.string.export_format_pdf, "export_format_pdf", onFormat)
+                FormatRow(ExportFormat.SVG, format, R.string.export_format_svg, "export_format_svg", onFormat)
                 if (format == ExportFormat.JPEG) {
                     Text(stringResource(R.string.export_quality, quality), color = ink)
                     Slider(
@@ -67,7 +69,7 @@ fun ExportDialog(
                         ),
                     )
                 }
-                if (format == ExportFormat.PNG || format == ExportFormat.GIF) {
+                if (format.supportsTransparent) {
                     Row(
                         modifier = Modifier
                             .testTag("export_transparent")
