@@ -27,6 +27,22 @@ object ExportRenderer {
         return ColorMath.compositeOver(src, background)
     }
 
+    /** GIF alpha is on or off: alpha-0 stays clear, anything else is composited over [background]. */
+    fun gifPixel(src: Int, background: Int): Int {
+        if (src ushr 24 == 0) return 0
+        return ColorMath.compositeOver(src, background)
+    }
+
+    /** Applies [gifPixel] to a transparent render in place, one row at a time. */
+    fun flattenForGif(bitmap: Bitmap, background: Int) {
+        val row = IntArray(bitmap.width)
+        for (y in 0 until bitmap.height) {
+            bitmap.getPixels(row, 0, bitmap.width, 0, y, bitmap.width, 1)
+            for (x in row.indices) row[x] = gifPixel(row[x], background)
+            bitmap.setPixels(row, 0, bitmap.width, 0, y, bitmap.width, 1)
+        }
+    }
+
     fun compositeRow(ink: IntArray, background: Int, transparent: Boolean, out: IntArray) {
         require(out.size >= ink.size)
         for (index in ink.indices) {

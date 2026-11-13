@@ -23,4 +23,13 @@ class ExportRendererTest {
         assertEquals(ink[0], out[0])
         assertEquals(ink[1], out[1])
     }
+
+    @Test
+    fun gifPixelKeepsClearAndFlattensPartialAlpha() {
+        val background = 0xFF00FF00.toInt()
+        assertEquals(0, ExportRenderer.gifPixel(0x00123456, background))
+        val half = 0x80FF0000.toInt()
+        assertEquals(ColorMath.compositeOver(half, background), ExportRenderer.gifPixel(half, background))
+        assertEquals(0xFF112233.toInt(), ExportRenderer.gifPixel(0xFF112233.toInt(), background))
+    }
 }

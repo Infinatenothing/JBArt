@@ -69,6 +69,7 @@
     <string name="export_format_png">PNG</string>
     <string name="export_format_jpeg">JPEG</string>
     <string name="export_format_bmp">BMP</string>
+    <string name="export_format_gif">GIF</string>
     <string name="export_quality">Quality %1$d</string>
     <string name="export_transparent">Transparent background</string>
     <string name="export_save">Save</string>

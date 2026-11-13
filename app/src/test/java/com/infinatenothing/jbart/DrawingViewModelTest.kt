@@ -648,6 +648,19 @@ class DrawingViewModelTest {
         assertTrue(restored.document.objects.isEmpty())
     }
 
+    @Test
+    fun gifExportFormatSurvivesSavedState() {
+        val handle = SavedStateHandle()
+        model(handle, MemorySessionStore()).updateExportFormat(ExportFormat.GIF)
+        val restored = model(
+            SavedStateHandle(
+                mapOf(DrawingViewModel.KEY_EXPORT_FORMAT to handle.get<String>(DrawingViewModel.KEY_EXPORT_FORMAT)),
+            ),
+            MemorySessionStore(),
+        )
+        assertEquals(ExportFormat.GIF, restored.exportFormat)
+    }
+
     private fun model(
         savedState: SavedStateHandle = SavedStateHandle(),
         store: SessionStore = MemorySessionStore(),

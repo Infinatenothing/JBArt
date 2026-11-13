@@ -13,5 +13,6 @@ class ExportNamingTest {
         assertEquals("JBArt_20261108_175901.png", ExportNaming.fileName(now, ExportFormat.PNG))
         assertEquals("JBArt_20261108_175901.jpg", ExportNaming.fileName(now, ExportFormat.JPEG))
         assertEquals("JBArt_20261108_175901.bmp", ExportNaming.fileName(now, ExportFormat.BMP))
+        assertEquals("JBArt_20261108_175901.gif", ExportNaming.fileName(now, ExportFormat.GIF))
     }
 }

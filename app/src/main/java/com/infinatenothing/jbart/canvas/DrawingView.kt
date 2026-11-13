@@ -551,7 +551,7 @@ class DrawingView(context: Context) : View(context) {
         }
         val appContext = context.applicationContext
         val started = System.nanoTime()
-        val keepAlpha = transparent && format == ExportFormat.PNG
+        val keepAlpha = transparent && (format == ExportFormat.PNG || format == ExportFormat.GIF)
         try {
             exportExecutor.execute {
                 var rendered: Bitmap? = null
@@ -563,6 +563,9 @@ class DrawingView(context: Context) : View(context) {
                         source.background,
                         keepAlpha,
                     )
+                    if (keepAlpha && format == ExportFormat.GIF) {
+                        ExportRenderer.flattenForGif(rendered, source.background)
+                    }
                     val name = ExportNaming.fileName(LocalDateTime.now(), format)
                     val uri = if (share) {
                         ExportWriter.writeShareFile(appContext, rendered, format, quality, name)
