@@ -114,11 +114,13 @@ class ViewTransformTest {
     }
 
     @Test
-    fun centerOnRoundTripsTheCanvasPoint() {
+    fun placeAtRoundTripsTheCanvasPoint() {
         val transform = ViewTransform(scale = 2.5f)
-        transform.centerOn(80f, 40f, 300f, 200f)
-        assertEquals(80f, transform.centerX(300f), 0.01f)
-        assertEquals(40f, transform.centerY(200f), 0.01f)
+        transform.placeAt(80f, 40f, 150f, 100f)
+        val canvas = FloatArray(2)
+        transform.toCanvas(150f, 100f, canvas)
+        assertEquals(80f, canvas[0], 0.01f)
+        assertEquals(40f, canvas[1], 0.01f)
         val screen = FloatArray(2)
         transform.toScreen(80f, 40f, screen)
         assertEquals(150f, screen[0], 0.01f)

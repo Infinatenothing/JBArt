@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.ChangeHistory
 import androidx.compose.material.icons.filled.CropFree
 import androidx.compose.material.icons.filled.CropSquare
 import androidx.compose.material.icons.filled.FormatColorFill
+import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.NorthEast
 import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material.icons.filled.IosShare
@@ -118,6 +119,7 @@ fun DrawingToolbar(
     onClearCanvas: () -> Unit,
     onBackgroundColor: () -> Unit,
     onExport: () -> Unit,
+    onHideToolbar: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var canvasMenu by remember { mutableStateOf(false) }
@@ -213,6 +215,17 @@ fun DrawingToolbar(
             selected = false,
             enabled = true,
             onClick = onExport,
+        ),
+        Item(
+            tag = "tool_hide_toolbar",
+            description = stringResource(R.string.toolbar_hide),
+            icon = Icons.Filled.Fullscreen,
+            selected = false,
+            enabled = true,
+            onClick = {
+                canvasMenu = false
+                onHideToolbar()
+            },
         ),
     )
     SideEffect {

@@ -108,6 +108,10 @@ class DrawingViewModel(
         private set
     var fitNonce by mutableIntStateOf(0)
         private set
+
+    /** UI chrome only: kept in SavedStateHandle, never in a project file or the autosave. */
+    var toolbarHidden by mutableStateOf(savedState.get<Boolean>(KEY_TOOLBAR_HIDDEN) ?: false)
+        private set
     var exportFormat by mutableStateOf(ExportFormat.PNG)
         private set
     var exportQuality by mutableIntStateOf(90)
@@ -405,6 +409,11 @@ class DrawingViewModel(
     fun setFillRunning(busy: Boolean) {
         if (fillBusy == busy) return
         fillBusy = busy
+    }
+
+    fun updateToolbarHidden(hidden: Boolean) {
+        toolbarHidden = hidden
+        savedState[KEY_TOOLBAR_HIDDEN] = hidden
     }
 
     /** View center is a canvas point. Absent centers mean the identity transform. */
@@ -908,6 +917,7 @@ class DrawingViewModel(
         const val KEY_EXPORT_FORMAT = "export_format"
         const val KEY_EXPORT_QUALITY = "export_quality"
         const val KEY_EXPORT_TRANSPARENT = "export_transparent"
+        const val KEY_TOOLBAR_HIDDEN = "toolbar_hidden"
 
         /** Settings a project file carries. Export settings stay with the app. */
         private val PROJECT_KEYS = listOf(

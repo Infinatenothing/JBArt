@@ -69,6 +69,22 @@ class DrawingViewModelTest {
     }
 
     @Test
+    fun toolbarHiddenSurvivesSavedStateButNotTheSession() {
+        val store = MemorySessionStore()
+        val handle = SavedStateHandle()
+        val model = model(handle, store)
+        assertFalse(model.toolbarHidden)
+        model.updateToolbarHidden(true)
+        model.commit(line())
+        model.onHostStop()
+        val copy = SavedStateHandle(
+            mapOf(DrawingViewModel.KEY_TOOLBAR_HIDDEN to handle.get<Boolean>(DrawingViewModel.KEY_TOOLBAR_HIDDEN)),
+        )
+        assertTrue(model(copy, store).toolbarHidden)
+        assertFalse(model(SavedStateHandle(), store).toolbarHidden)
+    }
+
+    @Test
     fun shapeSettingsSurviveSavedStateAndSessionReload() {
         val store = MemorySessionStore()
         val handle = SavedStateHandle()

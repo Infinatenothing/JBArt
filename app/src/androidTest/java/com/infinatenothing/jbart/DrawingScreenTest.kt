@@ -68,6 +68,20 @@ class DrawingScreenTest {
     }
 
     @Test
+    fun hideToolbarShowsRestoreButtonAndRestoreBringsItBack() {
+        rule.onNodeWithTag("tool_hide_toolbar").performScrollTo().performClick()
+        rule.waitForIdle()
+        assertTrue(rule.onAllNodesWithTag("toolbar").fetchSemanticsNodes().isEmpty())
+        assertTrue(rule.onAllNodesWithTag("project_name").fetchSemanticsNodes().isEmpty())
+        rule.onNodeWithContentDescription("Show toolbar").assertIsDisplayed()
+        rule.onNodeWithTag("toolbar_restore").performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag("toolbar").assertIsDisplayed()
+        rule.onNodeWithTag("project_name").assertIsDisplayed()
+        assertTrue(rule.onAllNodesWithTag("toolbar_restore").fetchSemanticsNodes().isEmpty())
+    }
+
+    @Test
     fun toolbarIsDisplayed() {
         rule.onNodeWithTag("toolbar").assertIsDisplayed()
         rule.onNodeWithContentDescription("Brush").assertIsDisplayed()
