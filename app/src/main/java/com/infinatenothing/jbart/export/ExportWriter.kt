@@ -19,11 +19,19 @@ object ExportWriter {
         format: ExportFormat,
         quality: Int,
         displayName: String,
+    ): android.net.Uri = saveToMediaStore(context, format, displayName) { writeBitmap(bitmap, format, quality, it) }
+
+    /** Images go to Pictures/JBArt. PDF goes to Documents/JBArt: MediaStore only allows image types under Pictures. */
+    fun saveToMediaStore(
+        context: Context,
+        format: ExportFormat,
+        displayName: String,
+        write: (OutputStream) -> Unit,
     ): android.net.Uri {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            savePending(context, bitmap, format, quality, displayName)
+            savePending(context, format, displayName, write)
         } else {
-            saveLegacy(context, bitmap, format, quality, displayName)
+            saveLegacy(context, format, displayName, write)
         }
     }
 
@@ -33,7 +41,9 @@ object ExportWriter {
         format: ExportFormat,
         quality: Int,
         displayName: String,
-    ): android.net.Uri {
+    ): android.net.Uri = writeShareFile(context, displayName) { writeBitmap(bitmap, format, quality, it) }
+
+    fun writeShareFile(context: Context, displayName: String, write: (OutputStream) -> Unit): android.net.Uri {
         val dir = File(context.cacheDir, "exports")
         if (!dir.isDirectory && !dir.mkdirs()) throw IOException("mkdir")
         dir.listFiles()?.forEach { child ->
@@ -41,7 +51,7 @@ object ExportWriter {
         }
         val file = File(dir, displayName)
         try {
-            FileOutputStream(file).use { writeBitmap(bitmap, format, quality, it) }
+            FileOutputStream(file).use(write)
         } catch (thrown: Throwable) {
             file.delete()
             throw thrown
@@ -49,26 +59,33 @@ object ExportWriter {
         return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
     }
 
+    fun isImage(format: ExportFormat): Boolean = format.mimeType.startsWith("image/")
+
+    private fun directory(format: ExportFormat): String {
+        return if (isImage(format)) Environment.DIRECTORY_PICTURES else Environment.DIRECTORY_DOCUMENTS
+    }
+
+    private fun collection(format: ExportFormat): android.net.Uri {
+        return if (isImage(format)) MediaStore.Images.Media.EXTERNAL_CONTENT_URI else MediaStore.Files.getContentUri("external")
+    }
+
     private fun savePending(
         context: Context,
-        bitmap: Bitmap,
         format: ExportFormat,
-        quality: Int,
         displayName: String,
+        write: (OutputStream) -> Unit,
     ): android.net.Uri {
         val resolver = context.contentResolver
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
             put(MediaStore.MediaColumns.MIME_TYPE, format.mimeType)
-            put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/JBArt")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, "${directory(format)}/JBArt")
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
-        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+        val uri = resolver.insert(collection(format), values)
             ?: throw IOException("insert")
         try {
-            resolver.openOutputStream(uri)?.use { stream ->
-                writeBitmap(bitmap, format, quality, stream)
-            } ?: throw IOException("stream")
+            resolver.openOutputStream(uri)?.use(write) ?: throw IOException("stream")
             val published = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
             if (resolver.update(uri, published, null, null) != 1) throw IOException("publish")
             return uri
@@ -81,23 +98,22 @@ object ExportWriter {
     @Suppress("DEPRECATION")
     private fun saveLegacy(
         context: Context,
-        bitmap: Bitmap,
         format: ExportFormat,
-        quality: Int,
         displayName: String,
+        write: (OutputStream) -> Unit,
     ): android.net.Uri {
-        val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "JBArt")
+        val dir = File(Environment.getExternalStoragePublicDirectory(directory(format)), "JBArt")
         if (!dir.isDirectory && !dir.mkdirs()) throw IOException("mkdir")
         val file = File(dir, displayName)
         var uri: android.net.Uri? = null
         try {
-            FileOutputStream(file).use { writeBitmap(bitmap, format, quality, it) }
+            FileOutputStream(file).use(write)
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
                 put(MediaStore.MediaColumns.MIME_TYPE, format.mimeType)
                 put(MediaStore.MediaColumns.DATA, file.absolutePath)
             }
-            uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            uri = context.contentResolver.insert(collection(format), values)
                 ?: throw IOException("insert")
             return uri
         } catch (thrown: Throwable) {
@@ -128,6 +144,7 @@ object ExportWriter {
                 val indices = GifPalette.map(pixels, bitmap.width, bitmap.height, palette)
                 GifEncoder.encode(indices, bitmap.width, bitmap.height, palette.colors, palette.transparentIndex, out)
             }
+            ExportFormat.PDF, ExportFormat.SVG -> throw IllegalArgumentException("vector format")
         }
     }
 }

@@ -3,12 +3,18 @@ package com.infinatenothing.jbart.export
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import com.infinatenothing.jbart.model.ColorMath
+import com.infinatenothing.jbart.model.DrawObject
 
+/**
+ * Raster export: [ink] is a full copy. Vector export: [objects] are the visible objects and
+ * [ink] is the replay through the last erase, or null when there is no erase.
+ */
 class ExportSource(
-    val ink: Bitmap,
+    val ink: Bitmap?,
     val width: Int,
     val height: Int,
     val background: Int,
+    val objects: List<DrawObject> = emptyList(),
 )
 
 object ExportRenderer {
