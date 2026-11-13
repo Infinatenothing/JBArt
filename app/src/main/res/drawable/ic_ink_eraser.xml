@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Material Symbols ink_eraser (Apache 2.0), 960 unit path scaled into a 24 x 24 viewport. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <group
+        android:scaleX="0.025"
+        android:scaleY="0.025"
+        android:translateY="24">
+        <path
+            android:fillColor="#FF000000"
+            android:pathData="M690,-240h190v80H610l80,-80Zm-500,80 l-85,-85q-23,-23 -23.5,-57t22.5,-58l440,-456q23,-24 56.5,-24t56.5,23l199,199q23,23 23,57t-23,57L520,-160H190Zm296,-80 l314,-322 -198,-198 -442,456 64,64h262Zm-6,-240Z" />
+    </group>
+</vector>

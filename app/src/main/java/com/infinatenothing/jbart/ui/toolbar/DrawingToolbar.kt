@@ -24,16 +24,16 @@ import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.ChangeHistory
-import androidx.compose.material.icons.filled.CropFree
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.CropSquare
 import androidx.compose.material.icons.filled.FormatColorFill
-import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.NorthEast
 import androidx.compose.material.icons.outlined.Circle
-import androidx.compose.material.icons.filled.IosShare
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Straighten
-import androidx.compose.material.icons.outlined.CleaningServices
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -55,6 +55,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.vectorResource
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
@@ -139,7 +140,7 @@ fun DrawingToolbar(
         Item(
             tag = "tool_eraser",
             description = stringResource(R.string.tool_eraser),
-            icon = Icons.Outlined.CleaningServices,
+            icon = ImageVector.vectorResource(R.drawable.ic_ink_eraser),
             selected = selectedTool == Tool.ERASER,
             enabled = true,
             settingsTool = Tool.ERASER,
@@ -203,7 +204,7 @@ fun DrawingToolbar(
         Item(
             tag = "tool_canvas",
             description = stringResource(R.string.action_canvas),
-            icon = Icons.Filled.CropFree,
+            icon = Icons.AutoMirrored.Filled.InsertDriveFile,
             selected = canvasMenu,
             enabled = true,
             onClick = { canvasMenu = true },
@@ -211,7 +212,7 @@ fun DrawingToolbar(
         Item(
             tag = "tool_export",
             description = stringResource(R.string.action_export),
-            icon = Icons.Filled.IosShare,
+            icon = Icons.Filled.Save,
             selected = false,
             enabled = true,
             onClick = onExport,
@@ -219,7 +220,7 @@ fun DrawingToolbar(
         Item(
             tag = "tool_hide_toolbar",
             description = stringResource(R.string.toolbar_hide),
-            icon = Icons.Filled.Fullscreen,
+            icon = if (vertical) Icons.AutoMirrored.Filled.KeyboardArrowLeft else Icons.Filled.KeyboardArrowDown,
             selected = false,
             enabled = true,
             onClick = {
