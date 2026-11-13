@@ -11,8 +11,25 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material3.Icon
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -32,6 +49,7 @@ import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -70,6 +88,7 @@ import com.infinatenothing.jbart.session.ContentProjectFiles
 import com.infinatenothing.jbart.session.ProjectArchive
 import com.infinatenothing.jbart.R
 import com.infinatenothing.jbart.canvas.DrawingView
+import com.infinatenothing.jbart.canvas.ViewTransform
 import com.infinatenothing.jbart.model.ColorTarget
 import com.infinatenothing.jbart.model.Tool
 import com.infinatenothing.jbart.ui.toolbar.BrushSettingsPanel
@@ -365,6 +384,16 @@ fun DrawingScreen(model: DrawingViewModel) {
                     exportOpen = true
                 }
             },
+            onHideToolbar = {
+                val modalOpen = canvasNew || canvasClear || canvasBackground || exportOpen ||
+                    unsavedPrompt != null || recentsOpen
+                if (!modalOpen) {
+                    settingsTool = null
+                    colorPickerOpen = false
+                    canvasView[0]?.refitOnToggle(0f)
+                    model.updateToolbarHidden(true)
+                }
+            },
             modifier = modifier,
         )
     }
@@ -416,29 +445,61 @@ fun DrawingScreen(model: DrawingViewModel) {
                 .testTag("project_name"),
         )
     }
-    if (compact) {
-        Scaffold(bottomBar = { toolbar(false, Modifier) }) { padding ->
-            Box(Modifier.padding(padding).fillMaxSize()) {
-                canvas(Modifier.fillMaxSize())
-                if (model.eyedropperActive) EyedropperCancel(cancelEyedropper)
-                if (fillBusy) FillBusy(Modifier.align(Alignment.TopCenter))
-                if (exportBusy) FillBusy(Modifier.align(Alignment.TopCenter), tag = "export_busy")
-                if (model.projectBusy) FillBusy(Modifier.align(Alignment.TopCenter), tag = "project_busy")
-                projectLabel(Modifier.align(Alignment.TopStart))
+    val hidden = model.toolbarHidden
+    LaunchedEffect(hidden) {
+        val bars = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
+        if (hidden) {
+            bars.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            bars.hide(WindowInsetsCompat.Type.systemBars())
+        } else {
+            bars.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+    // Fade only: the canvas resizes once, when the fade-out ends or the fade-in starts.
+    val fade = fadeIn(tween(TOOLBAR_FADE_MS)) to fadeOut(tween(TOOLBAR_FADE_MS))
+    val canvasArea = @Composable { modifier: Modifier ->
+        Box(modifier) {
+            canvas(Modifier.fillMaxSize())
+            if (model.eyedropperActive) EyedropperCancel(cancelEyedropper)
+            if (fillBusy) FillBusy(Modifier.align(Alignment.TopCenter))
+            if (exportBusy) FillBusy(Modifier.align(Alignment.TopCenter), tag = "export_busy")
+            if (model.projectBusy) FillBusy(Modifier.align(Alignment.TopCenter), tag = "project_busy")
+            if (!hidden) projectLabel(Modifier.align(Alignment.TopStart))
+            AnimatedVisibility(
+                visible = hidden,
+                enter = fade.first,
+                exit = fade.second,
+                modifier = Modifier.align(Alignment.BottomEnd),
+            ) {
+                ToolbarRestoreButton(onClick = {
+                    canvasView[0]?.refitOnToggle(ViewTransform.FIT_MARGIN_DP)
+                    model.updateToolbarHidden(false)
+                })
             }
+        }
+    }
+    if (compact) {
+        Scaffold(
+            bottomBar = {
+                AnimatedVisibility(visible = !hidden, enter = fade.first, exit = fade.second) {
+                    toolbar(false, Modifier)
+                }
+            },
+        ) { padding ->
+            canvasArea(Modifier.padding(padding).fillMaxSize())
         }
     } else {
         Scaffold { padding ->
             Row(Modifier.padding(padding).fillMaxSize()) {
-                toolbar(true, Modifier.fillMaxHeight().width(80.dp).zIndex(1f))
-                Box(Modifier.weight(1f).fillMaxHeight()) {
-                    canvas(Modifier.fillMaxSize())
-                    if (model.eyedropperActive) EyedropperCancel(cancelEyedropper)
-                    if (fillBusy) FillBusy(Modifier.align(Alignment.TopCenter))
-                    if (exportBusy) FillBusy(Modifier.align(Alignment.TopCenter), tag = "export_busy")
-                    if (model.projectBusy) FillBusy(Modifier.align(Alignment.TopCenter), tag = "project_busy")
-                    projectLabel(Modifier.align(Alignment.TopStart))
+                AnimatedVisibility(
+                    visible = !hidden,
+                    enter = fade.first,
+                    exit = fade.second,
+                    modifier = Modifier.zIndex(1f),
+                ) {
+                    toolbar(true, Modifier.fillMaxHeight().width(80.dp))
                 }
+                canvasArea(Modifier.weight(1f).fillMaxHeight())
             }
         }
     }
@@ -582,6 +643,28 @@ fun DrawingScreen(model: DrawingViewModel) {
 }
 
 private const val NEW_ACTION = "new"
+private const val TOOLBAR_FADE_MS = 200
+
+@Composable
+private fun ToolbarRestoreButton(onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val description = stringResource(R.string.toolbar_show)
+    Box(
+        modifier = Modifier
+            .padding(16.dp)
+            .size(48.dp)
+            .clip(CircleShape)
+            .background(Color.White.copy(alpha = if (pressed) 1f else 0.8f))
+            .border(1.dp, Color.Black, CircleShape)
+            .clickable(interactionSource = interaction, indication = null, role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = description }
+            .testTag("toolbar_restore"),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(Icons.Filled.FullscreenExit, contentDescription = null, tint = Color.Black)
+    }
+}
 
 @Composable
 private fun NewCanvasDialog(
@@ -644,7 +727,9 @@ private fun NewCanvasDialog(
                             ),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(text = label, color = Color.Black)
+                        // The row's selectable() handles the tap; the radio only shows the choice.
+                        RadioButton(selected = itemIndex == index, onClick = null)
+                        Text(text = label, color = Color.Black, modifier = Modifier.padding(start = 12.dp))
                     }
                 }
                 Spacer(Modifier.height(8.dp))

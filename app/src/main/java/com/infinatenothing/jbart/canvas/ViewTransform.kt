@@ -63,15 +63,11 @@ class ViewTransform(
         ty = (viewH - canvasH * scale) / 2f
     }
 
-    /** Places the canvas point at the center of the view. */
-    fun centerOn(canvasX: Float, canvasY: Float, viewW: Float, viewH: Float) {
-        tx = viewW / 2f - canvasX * scale
-        ty = viewH / 2f - canvasY * scale
+    /** Places the canvas point at the view point [screenX], [screenY]. */
+    fun placeAt(canvasX: Float, canvasY: Float, screenX: Float, screenY: Float) {
+        tx = screenX - canvasX * scale
+        ty = screenY - canvasY * scale
     }
-
-    fun centerX(viewW: Float): Float = (viewW / 2f - tx) / scale
-
-    fun centerY(viewH: Float): Float = (viewH / 2f - ty) / scale
 
     /**
      * Keeps at least 25 percent of the canvas on screen, or [minVisiblePx], whichever is larger.

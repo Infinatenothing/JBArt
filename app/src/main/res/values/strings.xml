@@ -36,6 +36,8 @@
     <string name="action_undo">Undo</string>
     <string name="action_redo">Redo</string>
     <string name="action_export">Export</string>
+    <string name="toolbar_hide">Hide toolbar</string>
+    <string name="toolbar_show">Show toolbar</string>
     <string name="settings_fill">Fill</string>
     <string name="fill_tolerance">Tolerance %1$d</string>
     <string name="fill_gap_off">Off</string>

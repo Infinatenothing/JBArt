@@ -286,6 +286,13 @@ class DrawingView(context: Context) : View(context) {
     private var viewCenterYRequest = Float.NaN
     private var fitNonce = 0
     private var appliedFitNonce = 0
+    private val screenOrigin = IntArray(2)
+    private val rootOrigin = IntArray(2)
+    private val anchor = FloatArray(2)
+    private var originX = Int.MIN_VALUE
+    private var originY = Int.MIN_VALUE
+    /** Fit margin to reapply on each resize after a toolbar toggle; negative when off. */
+    private var autoFitMarginPx = -1f
     private var navigating = false
     private var navFrozen = false
     private var navFocusX = 0f
@@ -334,6 +341,15 @@ class DrawingView(context: Context) : View(context) {
         invalidate()
     }
 
+    /**
+     * Called just before the toolbar hides or shows. If the whole canvas is on screen, the coming
+     * resizes refit it with [marginDp] so it uses the space; a zoomed-in view is left where it is.
+     * The first touch or zoom step ends it.
+     */
+    fun refitOnToggle(marginDp: Float) {
+        autoFitMarginPx = if (wholeCanvasVisible()) dp(marginDp) else -1f
+    }
+
     fun setFitNonce(nonce: Int) {
         fitNonce = nonce
         applyPendingFit()
@@ -344,6 +360,19 @@ class DrawingView(context: Context) : View(context) {
         if (ensureCanvasBitmaps()) renderAll()
         applyViewRequest(publish = !viewCenterXRequest.isNaN() && !viewCenterYRequest.isNaN())
         applyPendingFit()
+        if (autoFitMarginPx >= 0f) fitTo(autoFitMarginPx)
+    }
+
+    // shortcut: only sees a move when this view itself is laid out; a pure move of the Compose host
+    // with no size change is missed. Upgrade to a ViewTreeObserver listener if that case appears.
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        super.onLayout(changed, left, top, right, bottom)
+        getLocationOnScreen(screenOrigin)
+        if (screenOrigin[0] == originX && screenOrigin[1] == originY) return
+        originX = screenOrigin[0]
+        originY = screenOrigin[1]
+        applyViewRequest(publish = false)
+        if (autoFitMarginPx >= 0f) fitTo(autoFitMarginPx)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -737,6 +766,7 @@ class DrawingView(context: Context) : View(context) {
         if (fillInFlight || exportInFlight || inputBlocked) return true
         logEvent(event)
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            autoFitMarginPx = -1f
             parent?.requestDisallowInterceptTouchEvent(true)
         }
         if (navigating) {
@@ -2276,6 +2306,7 @@ class DrawingView(context: Context) : View(context) {
 
     private fun stepZoom(factor: Float) {
         if (width <= 0 || height <= 0) return
+        autoFitMarginPx = -1f
         viewTransform.zoomAround(width / 2f, height / 2f, factor)
         constrainView()
         publishView()
@@ -2350,16 +2381,26 @@ class DrawingView(context: Context) : View(context) {
         if (fitNonce == appliedFitNonce || width <= 0 || height <= 0) return
         if ((document?.width ?: 0) <= 0) return
         appliedFitNonce = fitNonce
-        viewTransform.fit(
-            canvasWidth(),
-            canvasHeight(),
-            width.toFloat(),
-            height.toFloat(),
-            dp(ViewTransform.FIT_MARGIN_DP),
-        )
+        fitTo(dp(ViewTransform.FIT_MARGIN_DP))
+    }
+
+    private fun fitTo(marginPx: Float) {
+        if (width <= 0 || height <= 0 || (document?.width ?: 0) <= 0) return
+        // A Screen-preset canvas is exactly the view size: show it at 100% edge to edge, not inset.
+        val exact = canvasWidth() == width.toFloat() && canvasHeight() == height.toFloat()
+        val margin = if (exact) 0f else marginPx
+        viewTransform.fit(canvasWidth(), canvasHeight(), width.toFloat(), height.toFloat(), margin)
         constrainView()
         publishView()
         invalidate()
+    }
+
+    private fun wholeCanvasVisible(): Boolean {
+        if (width <= 0 || height <= 0) return false
+        viewTransform.toScreen(0f, 0f, mapped)
+        if (mapped[0] < -1f || mapped[1] < -1f) return false
+        viewTransform.toScreen(canvasWidth(), canvasHeight(), mapped)
+        return mapped[0] <= width + 1f && mapped[1] <= height + 1f
     }
 
     private fun applyViewRequest(publish: Boolean) {
@@ -2367,27 +2408,44 @@ class DrawingView(context: Context) : View(context) {
         viewTransform.scale = viewScaleRequest.coerceIn(ViewTransform.MIN_SCALE, ViewTransform.MAX_SCALE)
         val hadCenter = !viewCenterXRequest.isNaN() && !viewCenterYRequest.isNaN()
         if (hadCenter) {
-            viewTransform.centerOn(
-                viewCenterXRequest,
-                viewCenterYRequest,
-                width.toFloat(),
-                height.toFloat(),
-            )
+            viewAnchor(anchor)
+            viewTransform.placeAt(viewCenterXRequest, viewCenterYRequest, anchor[0], anchor[1])
             constrainView()
         } else {
             viewTransform.tx = 0f
             viewTransform.ty = 0f
             syncMatrix()
+            // Gives the identity view a window-anchored center so later resizes cannot jump it.
+            publishView()
         }
         invalidate()
         if (publish && hadCenter) publishView()
     }
 
+    /**
+     * The window center in this view's coordinates. The saved view center is the canvas point under
+     * it, so toolbar and system-bar changes (which resize the view, not the window) never move the art.
+     */
+    private fun viewAnchor(out: FloatArray) {
+        val root = rootView
+        if (!isAttachedToWindow || root.width <= 0 || root.height <= 0) {
+            out[0] = width / 2f
+            out[1] = height / 2f
+            return
+        }
+        getLocationOnScreen(screenOrigin)
+        root.getLocationOnScreen(rootOrigin)
+        out[0] = rootOrigin[0] + root.width / 2f - screenOrigin[0]
+        out[1] = rootOrigin[1] + root.height / 2f - screenOrigin[1]
+    }
+
     private fun publishView() {
         if (width <= 0 || height <= 0) return
         val scale = viewTransform.scale
-        val centerX = viewTransform.centerX(width.toFloat())
-        val centerY = viewTransform.centerY(height.toFloat())
+        viewAnchor(anchor)
+        viewTransform.toCanvas(anchor[0], anchor[1], mapped)
+        val centerX = mapped[0]
+        val centerY = mapped[1]
         viewScaleRequest = scale
         viewCenterXRequest = centerX
         viewCenterYRequest = centerY
