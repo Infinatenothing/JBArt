@@ -80,4 +80,18 @@
     <string name="export_saved_documents">Saved to Documents/JBArt</string>
     <string name="export_failed">Export failed</string>
     <string name="export_cancel">Cancel</string>
+    <string name="project_open">Open</string>
+    <string name="project_save">Save</string>
+    <string name="project_save_as">Save As</string>
+    <string name="project_untitled">Untitled</string>
+    <string name="project_unsaved_title">Unsaved changes</string>
+    <string name="project_unsaved_body">Save changes to %1$s first?</string>
+    <string name="project_discard">Discard</string>
+    <string name="project_recent_title">Open project</string>
+    <string name="project_browse">Browse…</string>
+    <string name="project_recent_remove">Remove %1$s from recent files</string>
+    <string name="project_saved">Project saved</string>
+    <string name="project_save_failed">Could not save project</string>
+    <string name="project_open_failed">Could not open project.</string>
+    <string name="project_open_newer">This file was saved by a newer version of JBArt.</string>
 </resources>

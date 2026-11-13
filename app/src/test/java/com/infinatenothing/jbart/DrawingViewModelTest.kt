@@ -12,6 +12,9 @@ import com.infinatenothing.jbart.model.InputType
 import com.infinatenothing.jbart.model.ShapeKind
 import com.infinatenothing.jbart.model.StrokePoint
 import com.infinatenothing.jbart.model.Tool
+import com.infinatenothing.jbart.session.ProjectFiles
+import com.infinatenothing.jbart.session.ProjectLink
+import com.infinatenothing.jbart.session.RecentProjects
 import com.infinatenothing.jbart.session.SessionLoad
 import com.infinatenothing.jbart.session.SessionSnapshot
 import com.infinatenothing.jbart.session.SessionStore
@@ -21,6 +24,9 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
+import java.io.IOException
+import java.nio.file.Files
 import java.util.concurrent.AbstractExecutorService
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
@@ -661,6 +667,98 @@ class DrawingViewModelTest {
         assertEquals(ExportFormat.GIF, restored.exportFormat)
     }
 
+    @Test
+    fun saveClearsDirtyAndOpenRestoresHistoryPendingAndSettings() {
+        val dir = Files.createTempDirectory("jbart-project").toFile()
+        val files = MemoryProjectFiles()
+        val model = projectModel(dir, files)
+        assertNull(model.projectUri)
+        assertFalse(model.projectDirty)
+        model.commit(stroke(1f))
+        model.commit(stroke(2f))
+        model.undo()
+        model.updateShapeKind(ShapeKind.ARROW)
+        model.stagePending(line())
+        assertTrue(model.projectDirty)
+        var saved: Boolean? = null
+        model.saveProject("content://a", byteArrayOf(9), fresh = true) { saved = it }
+        assertEquals(true, saved)
+        assertEquals("content://a", model.projectUri)
+        assertEquals("a.jbart", model.projectName)
+        assertFalse(model.projectDirty)
+        assertEquals(ProjectEvent.SAVED, model.projectEvent)
+        assertEquals(listOf("content://a"), model.recentProjects.map { it.uri })
+
+        model.newCanvas(50, 60, 0xFFFFFFFF.toInt())
+        assertNull(model.projectUri)
+        model.updateShapeKind(ShapeKind.RECTANGLE)
+        model.openProject("content://a")
+        assertEquals(listOf(stroke(1f)), model.document.objects.toList())
+        assertEquals(line(), model.pending)
+        assertEquals(ShapeKind.ARROW, model.shapeKind)
+        assertTrue(model.history.canRedo)
+        assertEquals(100, model.document.width)
+        assertEquals("content://a", model.projectUri)
+        assertFalse(model.projectDirty)
+
+        val reborn = projectModel(dir, files)
+        assertEquals("content://a", reborn.projectUri)
+        assertEquals("a.jbart", reborn.projectName)
+    }
+
+    @Test
+    fun dirtySurvivesProcessDeathAndFailedSaveKeepsIt() {
+        val dir = Files.createTempDirectory("jbart-project").toFile()
+        val files = MemoryProjectFiles(failWrites = true)
+        val model = projectModel(dir, files)
+        model.commit(stroke(1f))
+        var saved: Boolean? = null
+        model.saveProject("content://a", null, fresh = true) { saved = it }
+        assertEquals(false, saved)
+        assertNull(model.projectUri)
+        assertTrue(model.projectDirty)
+        assertEquals(ProjectEvent.SAVE_FAILED, model.projectEvent)
+        assertTrue(projectModel(dir, files).projectDirty)
+    }
+
+    @Test
+    fun failedOpenKeepsDrawingAndDropsUnreadableRecent() {
+        val dir = Files.createTempDirectory("jbart-project").toFile()
+        val files = MemoryProjectFiles()
+        val model = projectModel(dir, files)
+        model.commit(stroke(1f))
+        model.saveProject("content://a", null, fresh = true)
+        model.commit(stroke(2f))
+        files.bytes["content://a"] = "garbage".toByteArray()
+        model.openProject("content://a")
+        assertEquals(ProjectEvent.OPEN_FAILED, model.projectEvent)
+        assertEquals(listOf(stroke(1f), stroke(2f)), model.document.objects.toList())
+        assertEquals(1, model.recentProjects.size)
+        files.bytes.remove("content://a")
+        model.openProject("content://a")
+        assertEquals(ProjectEvent.OPEN_FAILED, model.projectEvent)
+        assertEquals(emptyList<Any>(), model.recentProjects)
+        assertEquals(2, model.document.objects.size)
+    }
+
+    private fun projectModel(dir: File, files: ProjectFiles): DrawingViewModel {
+        return DrawingViewModel(
+            savedState = SavedStateHandle(),
+            store = MemorySessionStore(),
+            io = inlineExecutor(),
+            debounceMs = 0,
+            log = {},
+            projects = files,
+            link = ProjectLink(dir),
+            recents = RecentProjects(dir),
+            projectIo = inlineExecutor(),
+            post = { it() },
+        ).also { created ->
+            created.document.width = 100
+            created.document.height = 100
+        }
+    }
+
     private fun model(
         savedState: SavedStateHandle = SavedStateHandle(),
         store: SessionStore = MemorySessionStore(),
@@ -744,6 +842,19 @@ private class MemorySessionStore : SessionStore {
     override fun delete() {
         saved = null
     }
+}
+
+private class MemoryProjectFiles(private val failWrites: Boolean = false) : ProjectFiles {
+    val bytes = mutableMapOf<String, ByteArray>()
+
+    override fun read(uri: String): ByteArray = bytes[uri] ?: throw IOException("gone")
+
+    override fun write(uri: String, bytes: ByteArray, fresh: Boolean) {
+        if (failWrites) throw IOException("disk full")
+        this.bytes[uri] = bytes
+    }
+
+    override fun displayName(uri: String) = uri.substringAfterLast('/') + ".jbart"
 }
 
 private fun inlineExecutor(): ExecutorService {
