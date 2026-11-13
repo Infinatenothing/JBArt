@@ -121,6 +121,13 @@ object ExportWriter {
                 bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
                 BmpEncoder.encode(pixels, bitmap.width, bitmap.height, out)
             }
+            ExportFormat.GIF -> {
+                val pixels = IntArray(bitmap.width * bitmap.height)
+                bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+                val palette = GifPalette.build(pixels)
+                val indices = GifPalette.map(pixels, bitmap.width, bitmap.height, palette)
+                GifEncoder.encode(indices, bitmap.width, bitmap.height, palette.colors, palette.transparentIndex, out)
+            }
         }
     }
 }
