@@ -22,7 +22,8 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.Icon
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.contentDescription
@@ -471,7 +472,7 @@ fun DrawingScreen(model: DrawingViewModel) {
                 exit = fade.second,
                 modifier = Modifier.align(Alignment.BottomEnd),
             ) {
-                ToolbarRestoreButton(onClick = {
+                ToolbarRestoreButton(vertical = !compact, onClick = {
                     canvasView[0]?.refitOnToggle(ViewTransform.FIT_MARGIN_DP)
                     model.updateToolbarHidden(false)
                 })
@@ -646,7 +647,7 @@ private const val NEW_ACTION = "new"
 private const val TOOLBAR_FADE_MS = 200
 
 @Composable
-private fun ToolbarRestoreButton(onClick: () -> Unit) {
+private fun ToolbarRestoreButton(vertical: Boolean, onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val description = stringResource(R.string.toolbar_show)
@@ -662,7 +663,11 @@ private fun ToolbarRestoreButton(onClick: () -> Unit) {
             .testTag("toolbar_restore"),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(Icons.Filled.FullscreenExit, contentDescription = null, tint = Color.Black)
+        Icon(
+            if (vertical) Icons.AutoMirrored.Filled.KeyboardArrowRight else Icons.Filled.KeyboardArrowUp,
+            contentDescription = null,
+            tint = Color.Black,
+        )
     }
 }
 
