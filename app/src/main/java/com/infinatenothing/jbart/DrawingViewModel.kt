@@ -1,5 +1,8 @@
 package com.infinatenothing.jbart
 
+import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -27,15 +30,26 @@ import com.infinatenothing.jbart.model.clampBrushSettings
 import com.infinatenothing.jbart.model.colorForShape
 import com.infinatenothing.jbart.model.opaque
 import com.infinatenothing.jbart.model.pushRecent
+import com.infinatenothing.jbart.session.ContentProjectFiles
 import com.infinatenothing.jbart.session.FileSessionStore
+import com.infinatenothing.jbart.session.ProjectArchive
+import com.infinatenothing.jbart.session.ProjectFiles
+import com.infinatenothing.jbart.session.ProjectLink
+import com.infinatenothing.jbart.session.ProjectLinkState
+import com.infinatenothing.jbart.session.ProjectRead
+import com.infinatenothing.jbart.session.RecentProject
+import com.infinatenothing.jbart.session.RecentProjects
 import com.infinatenothing.jbart.session.SessionCodec
 import com.infinatenothing.jbart.session.SessionLoad
 import com.infinatenothing.jbart.session.SessionSnapshot
 import com.infinatenothing.jbart.session.SessionStore
-import java.io.File
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+
+enum class ProjectEvent { SAVED, SAVE_FAILED, OPEN_NEWER, OPEN_FAILED }
 
 class DrawingViewModel(
     private val savedState: SavedStateHandle,
@@ -46,6 +60,14 @@ class DrawingViewModel(
     private val debounceMs: Long = SAVE_DEBOUNCE_MS,
     private val log: (String) -> Unit = { message -> Log.i(TAG, message) },
     val history: HistoryManager = HistoryManager(),
+    private val projects: ProjectFiles? = null,
+    private val link: ProjectLink? = null,
+    private val recents: RecentProjects? = null,
+    private val projectIo: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "jbart-project").apply { isDaemon = true }
+    },
+    private val post: (() -> Unit) -> Unit = { block -> Handler(Looper.getMainLooper()).post(block) },
+    private val now: () -> Long = System::currentTimeMillis,
 ) : ViewModel() {
     val document = DrawingDocument()
     var tool by mutableStateOf(Tool.BRUSH)
@@ -93,6 +115,29 @@ class DrawingViewModel(
     var exportTransparent by mutableStateOf(false)
         private set
 
+    /** Null means Untitled: Save runs Save As. */
+    var projectUri by mutableStateOf<String?>(null)
+        private set
+    var projectName by mutableStateOf<String?>(null)
+        private set
+
+    /** Changed since the last successful user Save or Open, not since the autosave. */
+    var projectDirty by mutableStateOf(false)
+        private set
+    var projectBusy by mutableStateOf(false)
+        private set
+    var recentProjects by mutableStateOf<List<RecentProject>>(emptyList())
+        private set
+
+    /** One-shot result for a Toast. The screen clears it with [consumeProjectEvent]. */
+    var projectEvent by mutableStateOf<ProjectEvent?>(null)
+        private set
+
+    /** A VIEW intent uri waiting for the screen to run the unsaved-changes prompt. */
+    var incomingProject by mutableStateOf<String?>(null)
+        private set
+    private var editGeneration = 0
+
     @Volatile
     private var saveGeneration = 0
     private val lock = Any()
@@ -112,6 +157,160 @@ class DrawingViewModel(
             SessionLoad.Failed(e.message ?: "load failed")
         }
         applyLoad(loaded)
+        link?.read()?.let { state ->
+            projectUri = state.uri
+            projectName = state.name
+            projectDirty = state.dirty
+        }
+        recentProjects = recents?.list().orEmpty()
+    }
+
+    fun offerIncomingProject(uri: String) {
+        incomingProject = uri
+    }
+
+    fun consumeIncomingProject() {
+        incomingProject = null
+    }
+
+    fun consumeProjectEvent() {
+        projectEvent = null
+    }
+
+    /** Writes the full snapshot, pending object included, to [uri]. [onDone] runs on the main thread. */
+    fun saveProject(uri: String, thumbPng: ByteArray?, fresh: Boolean, onDone: (Boolean) -> Unit = {}) {
+        val files = projects ?: return
+        if (projectBusy) return
+        cancelInFlightFill?.invoke()
+        val snapshot = synchronized(lock) { captureLocked() }
+        val generation = editGeneration
+        val fallbackName = projectName.takeIf { uri == projectUri } ?: suggestedProjectName()
+        projectBusy = true
+        val started = System.nanoTime()
+        projectIo.execute {
+            val name = try {
+                val name = files.displayName(uri) ?: fallbackName
+                files.write(uri, ProjectArchive.pack(snapshot, name, thumbPng), fresh)
+                name
+            } catch (e: Exception) {
+                log("project save failed ${e.javaClass.simpleName} ${e.message}")
+                null
+            }
+            val list = name?.let { recentsOrNull { it.add(uri, name, thumbPng, now()) } }
+            if (name != null) {
+                log("project save objects=${snapshot.objects.size} ms=${(System.nanoTime() - started) / 1_000_000L}")
+            }
+            post {
+                projectBusy = false
+                if (name != null) {
+                    projectUri = uri
+                    projectName = name
+                    projectDirty = editGeneration != generation
+                    persistLink()
+                    list?.let { recentProjects = it }
+                    projectEvent = ProjectEvent.SAVED
+                } else {
+                    projectEvent = ProjectEvent.SAVE_FAILED
+                }
+                onDone(name != null)
+            }
+        }
+    }
+
+    /** A failed read keeps the current drawing and the autosave. */
+    fun openProject(uri: String) {
+        val files = projects ?: return
+        if (projectBusy) return
+        projectBusy = true
+        val started = System.nanoTime()
+        projectIo.execute {
+            var unreadable = false
+            val read = try {
+                ProjectArchive.unpack(files.read(uri))
+            } catch (e: Exception) {
+                log("project open failed ${e.javaClass.simpleName} ${e.message}")
+                unreadable = true
+                ProjectRead.Corrupt
+            }
+            val name = if (read is ProjectRead.Ok) files.displayName(uri) ?: suggestedProjectName() else null
+            val list = when {
+                read is ProjectRead.Ok -> recentsOrNull { it.add(uri, name!!, read.thumb, now()) }
+                unreadable -> recentsOrNull { it.remove(uri) }
+                else -> null
+            }
+            log("project open result=${read.javaClass.simpleName} ms=${(System.nanoTime() - started) / 1_000_000L}")
+            post {
+                projectBusy = false
+                list?.let { recentProjects = it }
+                when (read) {
+                    is ProjectRead.Ok -> {
+                        applyProject(read.snapshot)
+                        projectUri = uri
+                        projectName = name
+                        projectDirty = false
+                        persistLink()
+                    }
+                    ProjectRead.Newer -> projectEvent = ProjectEvent.OPEN_NEWER
+                    ProjectRead.Corrupt -> projectEvent = ProjectEvent.OPEN_FAILED
+                }
+            }
+        }
+    }
+
+    fun removeRecentProject(uri: String) {
+        projectIo.execute {
+            val list = recentsOrNull { it.remove(uri) } ?: return@execute
+            post { recentProjects = list }
+        }
+    }
+
+    fun suggestedProjectName(): String {
+        return projectName ?: "JBArt_${LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))}" +
+            ".${ProjectArchive.EXTENSION}"
+    }
+
+    private fun <T> recentsOrNull(block: (RecentProjects) -> T): T? {
+        val store = recents ?: return null
+        return try {
+            block(store)
+        } catch (e: Exception) {
+            log("recents failed ${e.message}")
+            null
+        }
+    }
+
+    /** File settings win over [savedState], and the view is fit instead of restored. */
+    private fun applyProject(snapshot: SessionSnapshot) {
+        cancelInFlightFill?.invoke()
+        PROJECT_KEYS.forEach { savedState.remove<Any>(it) }
+        viewScale = 1f
+        viewCenterX = null
+        viewCenterY = null
+        applyLoad(SessionLoad.Ok(snapshot))
+        synchronized(lock) {
+            fitNonce++
+            revision++
+        }
+        scheduleSave()
+    }
+
+    private fun markDirty() {
+        editGeneration++
+        if (projectDirty) return
+        projectDirty = true
+        persistLink()
+    }
+
+    private fun persistLink() {
+        val store = link ?: return
+        val state = ProjectLinkState(projectUri, projectName, projectDirty)
+        projectIo.execute {
+            try {
+                store.write(state)
+            } catch (e: Exception) {
+                log("project link failed ${e.message}")
+            }
+        }
     }
 
     fun selectTool(value: Tool) {
@@ -269,6 +468,7 @@ class DrawingViewModel(
             pending = obj
         }
         log("pending start ${describe(obj)}")
+        markDirty()
         scheduleSave()
     }
 
@@ -279,6 +479,7 @@ class DrawingViewModel(
             pending = obj
         }
         log("pending edit ${describe(obj)}")
+        markDirty()
         scheduleSave()
     }
 
@@ -307,6 +508,7 @@ class DrawingViewModel(
             rememberUsedColor(obj)
             log("pending commit objects=${document.objects.size} undo=${history.undoCount}")
         }
+        markDirty()
         scheduleSave()
     }
 
@@ -327,6 +529,7 @@ class DrawingViewModel(
             revision++
             rememberUsedColor(obj)
         }
+        markDirty()
         scheduleSave()
     }
 
@@ -349,6 +552,10 @@ class DrawingViewModel(
             fitNonce++
             revision++
         }
+        projectUri = null
+        projectName = null
+        projectDirty = false
+        persistLink()
         scheduleSave()
         log("new canvas ${width}x$height background=${ColorMath.toHex(opaque(background))}")
     }
@@ -370,6 +577,7 @@ class DrawingViewModel(
             }
             revision++
         }
+        markDirty()
         scheduleSave()
         log("clear objects=${document.objects.size} undo=${history.undoCount}")
     }
@@ -381,6 +589,7 @@ class DrawingViewModel(
             document.backgroundColor = next
             revision++
         }
+        markDirty()
         scheduleSave()
         log("background=${ColorMath.toHex(next)}")
     }
@@ -399,6 +608,7 @@ class DrawingViewModel(
                 revision++
             }
         }
+        markDirty()
         scheduleSave()
     }
 
@@ -410,6 +620,7 @@ class DrawingViewModel(
             document.objects.add(entry)
             revision++
         }
+        markDirty()
         scheduleSave()
     }
 
@@ -444,6 +655,7 @@ class DrawingViewModel(
 
     override fun onCleared() {
         io.shutdownNow()
+        projectIo.shutdown()
     }
 
     private fun applyLoad(loaded: SessionLoad) {
@@ -697,13 +909,25 @@ class DrawingViewModel(
         const val KEY_EXPORT_QUALITY = "export_quality"
         const val KEY_EXPORT_TRANSPARENT = "export_transparent"
 
-        fun factory(filesDir: File): ViewModelProvider.Factory {
+        /** Settings a project file carries. Export settings stay with the app. */
+        private val PROJECT_KEYS = listOf(
+            KEY_TOOL, KEY_BRUSH_SIZE, KEY_BRUSH_OPACITY, KEY_ERASER_SIZE, KEY_ERASER_OPACITY, KEY_LINE_SNAP,
+            KEY_SHAPE_KIND, KEY_SHAPE_CONSTRAIN, KEY_SHAPE_FILLED, KEY_STROKE_COLOR, KEY_FILL_COLOR,
+            KEY_RECENT_COLORS, KEY_FILL_TOLERANCE, KEY_FILL_GAP, KEY_VIEW_SCALE, KEY_VIEW_CENTER_X, KEY_VIEW_CENTER_Y,
+        )
+
+        fun factory(context: Context): ViewModelProvider.Factory {
+            val app = context.applicationContext
+            val filesDir = app.filesDir
             return object : ViewModelProvider.Factory {
                 override fun <T : ViewModel> create(modelClass: Class<T>, extras: CreationExtras): T {
                     @Suppress("UNCHECKED_CAST")
                     return DrawingViewModel(
                         savedState = extras.createSavedStateHandle(),
                         store = FileSessionStore(filesDir),
+                        projects = ContentProjectFiles(app),
+                        link = ProjectLink(filesDir),
+                        recents = RecentProjects(filesDir),
                     ) as T
                 }
             }

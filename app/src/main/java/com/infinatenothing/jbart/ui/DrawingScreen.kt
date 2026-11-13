@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.BottomSheetDefaults
@@ -44,6 +45,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,12 +58,16 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.zIndex
 import com.infinatenothing.jbart.model.CanvasLimits
 import com.infinatenothing.jbart.DrawingViewModel
+import com.infinatenothing.jbart.ProjectEvent
+import com.infinatenothing.jbart.session.ContentProjectFiles
+import com.infinatenothing.jbart.session.ProjectArchive
 import com.infinatenothing.jbart.R
 import com.infinatenothing.jbart.canvas.DrawingView
 import com.infinatenothing.jbart.model.ColorTarget
@@ -89,6 +95,11 @@ fun DrawingScreen(model: DrawingViewModel) {
     var canvasBackground by remember { mutableStateOf(false) }
     var exportOpen by remember { mutableStateOf(false) }
     var exportBusy by remember { mutableStateOf(false) }
+    // Project actions: NEW_ACTION or a uri to open. Saveable so a rotation during a picker keeps them.
+    var unsavedPrompt by rememberSaveable { mutableStateOf<String?>(null) }
+    var afterSaveAs by rememberSaveable { mutableStateOf<String?>(null) }
+    var recentsOpen by rememberSaveable { mutableStateOf(false) }
+    val projectFiles = remember { ContentProjectFiles(activity) }
     val memoryClassMb = remember {
         activity.getSystemService(ActivityManager::class.java)?.memoryClass ?: 192
     }
@@ -128,6 +139,7 @@ fun DrawingScreen(model: DrawingViewModel) {
                 view.onEyedropperPick = { model.pickEyedropper(it) }
                 view.onEyedropperCancel = { model.cancelEyedropper() }
                 view.eyedropperActive = model.eyedropperActive
+                view.inputBlocked = model.projectBusy
                 view.onCommit = { model.commit(it) }
                 view.onStagePending = { model.stagePending(it) }
                 view.onUpdatePending = { model.updatePending(it) }
@@ -185,6 +197,53 @@ fun DrawingScreen(model: DrawingViewModel) {
         } else {
             beginExport(share)
         }
+    }
+    fun closePanels() {
+        canvasView[0]?.abandonInput()
+        settingsTool = null
+        colorPickerOpen = false
+        canvasBackground = false
+        canvasClear = false
+        canvasNew = false
+    }
+    fun runProjectAction(action: String) {
+        if (action == NEW_ACTION) canvasNew = true else model.openProject(action)
+    }
+    fun guardProjectAction(action: String) {
+        recentsOpen = false
+        if (model.projectDirty) unsavedPrompt = action else runProjectAction(action)
+    }
+    fun saveProjectTo(uri: String, fresh: Boolean, then: String?) {
+        canvasView[0]?.flushPendingEdit()
+        val thumb = canvasView[0]?.projectThumbnail()
+        model.saveProject(uri, thumb, fresh) { ok -> if (ok && then != null) runProjectAction(then) }
+    }
+    val createProject = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(ProjectArchive.MIME),
+    ) { uri ->
+        val then = afterSaveAs
+        afterSaveAs = null
+        if (uri == null) return@rememberLauncherForActivityResult
+        projectFiles.keep(uri)
+        saveProjectTo(uri.toString(), fresh = true, then = then)
+    }
+    val openProject = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        projectFiles.keep(uri)
+        guardProjectAction(uri.toString())
+    }
+    fun saveProjectAs(then: String?) {
+        if (model.projectBusy) return
+        afterSaveAs = then
+        createProject.launch(model.suggestedProjectName())
+    }
+    fun saveProject(then: String?) {
+        val uri = model.projectUri
+        if (uri == null) saveProjectAs(then) else saveProjectTo(uri, fresh = false, then = then)
+    }
+    fun browseProjects() {
+        recentsOpen = false
+        openProject.launch(arrayOf(ProjectArchive.MIME, "application/octet-stream"))
     }
     val colorPicker = @Composable { modifier: Modifier ->
         ColorPickerPanel(
@@ -264,12 +323,22 @@ fun DrawingScreen(model: DrawingViewModel) {
             onZoomIn = { canvasView[0]?.zoomIn() },
             onZoomOut = { canvasView[0]?.zoomOut() },
             onNewCanvas = {
-                canvasView[0]?.abandonInput()
-                settingsTool = null
-                colorPickerOpen = false
-                canvasBackground = false
-                canvasClear = false
-                canvasNew = true
+                closePanels()
+                guardProjectAction(NEW_ACTION)
+            },
+            onOpenProject = {
+                closePanels()
+                if (!model.projectBusy) {
+                    if (model.recentProjects.isEmpty()) browseProjects() else recentsOpen = true
+                }
+            },
+            onSaveProject = {
+                closePanels()
+                saveProject(null)
+            },
+            onSaveProjectAs = {
+                closePanels()
+                saveProjectAs(null)
             },
             onClearCanvas = {
                 canvasView[0]?.abandonInput()
@@ -312,8 +381,40 @@ fun DrawingScreen(model: DrawingViewModel) {
     if (model.eyedropperActive) {
         BackHandler(onBack = cancelEyedropper)
     }
-    if (exportBusy) {
+    if (exportBusy || model.projectBusy) {
         BackHandler { }
+    }
+    val incoming = model.incomingProject
+    LaunchedEffect(incoming) {
+        if (incoming == null) return@LaunchedEffect
+        model.consumeIncomingProject()
+        closePanels()
+        guardProjectAction(incoming)
+    }
+    val projectEvent = model.projectEvent
+    LaunchedEffect(projectEvent) {
+        val message = when (projectEvent ?: return@LaunchedEffect) {
+            ProjectEvent.SAVED -> R.string.project_saved
+            ProjectEvent.SAVE_FAILED -> R.string.project_save_failed
+            ProjectEvent.OPEN_NEWER -> R.string.project_open_newer
+            ProjectEvent.OPEN_FAILED -> R.string.project_open_failed
+        }
+        model.consumeProjectEvent()
+        Toast.makeText(activity, message, Toast.LENGTH_LONG).show()
+    }
+    val projectLabel = @Composable { modifier: Modifier ->
+        Text(
+            text = model.projectName ?: stringResource(R.string.project_untitled),
+            color = Color.Black,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = modifier
+                .padding(8.dp)
+                .widthIn(max = 320.dp)
+                .background(Color.White.copy(alpha = 0.8f))
+                .padding(horizontal = 8.dp, vertical = 4.dp)
+                .testTag("project_name"),
+        )
     }
     if (compact) {
         Scaffold(bottomBar = { toolbar(false, Modifier) }) { padding ->
@@ -322,6 +423,8 @@ fun DrawingScreen(model: DrawingViewModel) {
                 if (model.eyedropperActive) EyedropperCancel(cancelEyedropper)
                 if (fillBusy) FillBusy(Modifier.align(Alignment.TopCenter))
                 if (exportBusy) FillBusy(Modifier.align(Alignment.TopCenter), tag = "export_busy")
+                if (model.projectBusy) FillBusy(Modifier.align(Alignment.TopCenter), tag = "project_busy")
+                projectLabel(Modifier.align(Alignment.TopStart))
             }
         }
     } else {
@@ -333,6 +436,8 @@ fun DrawingScreen(model: DrawingViewModel) {
                     if (model.eyedropperActive) EyedropperCancel(cancelEyedropper)
                     if (fillBusy) FillBusy(Modifier.align(Alignment.TopCenter))
                     if (exportBusy) FillBusy(Modifier.align(Alignment.TopCenter), tag = "export_busy")
+                    if (model.projectBusy) FillBusy(Modifier.align(Alignment.TopCenter), tag = "project_busy")
+                    projectLabel(Modifier.align(Alignment.TopStart))
                 }
             }
         }
@@ -393,6 +498,30 @@ fun DrawingScreen(model: DrawingViewModel) {
             },
         )
     }
+    val prompt = unsavedPrompt
+    if (prompt != null) {
+        UnsavedChangesDialog(
+            name = model.projectName ?: stringResource(R.string.project_untitled),
+            onSave = {
+                unsavedPrompt = null
+                saveProject(then = prompt)
+            },
+            onDiscard = {
+                unsavedPrompt = null
+                runProjectAction(prompt)
+            },
+            onCancel = { unsavedPrompt = null },
+        )
+    }
+    if (recentsOpen) {
+        RecentProjectsDialog(
+            recents = model.recentProjects,
+            onOpen = { guardProjectAction(it) },
+            onRemove = { model.removeRecentProject(it) },
+            onBrowse = { browseProjects() },
+            onDismiss = { recentsOpen = false },
+        )
+    }
     if (canvasClear) {
         AlertDialog(
             onDismissRequest = { canvasClear = false },
@@ -451,6 +580,8 @@ fun DrawingScreen(model: DrawingViewModel) {
         }
     }
 }
+
+private const val NEW_ACTION = "new"
 
 @Composable
 private fun NewCanvasDialog(

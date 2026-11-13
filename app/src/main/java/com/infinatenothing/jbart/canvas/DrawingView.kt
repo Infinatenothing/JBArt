@@ -705,8 +705,36 @@ class DrawingView(context: Context) : View(context) {
         }
     }
 
+    /** PNG preview of the committed canvas with its background, long edge at most [maxEdge]. */
+    fun projectThumbnail(maxEdge: Int = 256): ByteArray? {
+        val source = ink ?: return null
+        val doc = document ?: return null
+        val scale = minOf(1f, maxEdge.toFloat() / maxOf(source.width, source.height))
+        val out = try {
+            Bitmap.createBitmap(
+                maxOf(1, (source.width * scale).roundToInt()),
+                maxOf(1, (source.height * scale).roundToInt()),
+                Bitmap.Config.ARGB_8888,
+            )
+        } catch (oom: OutOfMemoryError) {
+            return null
+        }
+        return try {
+            val canvas = Canvas(out)
+            canvas.drawColor(doc.backgroundColor or (0xFF shl 24))
+            canvas.scale(scale, scale)
+            canvas.drawBitmap(source, 0f, 0f, Paint(Paint.FILTER_BITMAP_FLAG))
+            ByteArrayOutputStream().also { out.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+        } finally {
+            out.recycle()
+        }
+    }
+
+    /** Set while a project save or open runs. */
+    var inputBlocked = false
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (fillInFlight || exportInFlight) return true
+        if (fillInFlight || exportInFlight || inputBlocked) return true
         logEvent(event)
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             parent?.requestDisallowInterceptTouchEvent(true)

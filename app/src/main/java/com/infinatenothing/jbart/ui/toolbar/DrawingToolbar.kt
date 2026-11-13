@@ -112,6 +112,9 @@ fun DrawingToolbar(
     onZoomIn: () -> Unit,
     onZoomOut: () -> Unit,
     onNewCanvas: () -> Unit,
+    onOpenProject: () -> Unit,
+    onSaveProject: () -> Unit,
+    onSaveProjectAs: () -> Unit,
     onClearCanvas: () -> Unit,
     onBackgroundColor: () -> Unit,
     onExport: () -> Unit,
@@ -237,6 +240,18 @@ fun DrawingToolbar(
                             canvasMenu = false
                             onNewCanvas()
                         },
+                        onOpen = {
+                            canvasMenu = false
+                            onOpenProject()
+                        },
+                        onSave = {
+                            canvasMenu = false
+                            onSaveProject()
+                        },
+                        onSaveAs = {
+                            canvasMenu = false
+                            onSaveProjectAs()
+                        },
                         onClear = {
                             canvasMenu = false
                             onClearCanvas()
@@ -323,6 +338,9 @@ private fun CanvasMenu(
     expanded: Boolean,
     onDismiss: () -> Unit,
     onNew: () -> Unit,
+    onOpen: () -> Unit,
+    onSave: () -> Unit,
+    onSaveAs: () -> Unit,
     onClear: () -> Unit,
     onBackground: () -> Unit,
 ) {
@@ -331,6 +349,21 @@ private fun CanvasMenu(
             text = { Text(stringResource(R.string.canvas_new)) },
             onClick = onNew,
             modifier = Modifier.testTag("canvas_new"),
+        )
+        DropdownMenuItem(
+            text = { Text(stringResource(R.string.project_open)) },
+            onClick = onOpen,
+            modifier = Modifier.testTag("project_open"),
+        )
+        DropdownMenuItem(
+            text = { Text(stringResource(R.string.project_save)) },
+            onClick = onSave,
+            modifier = Modifier.testTag("project_save"),
+        )
+        DropdownMenuItem(
+            text = { Text(stringResource(R.string.project_save_as)) },
+            onClick = onSaveAs,
+            modifier = Modifier.testTag("project_save_as"),
         )
         DropdownMenuItem(
             text = { Text(stringResource(R.string.canvas_clear)) },
